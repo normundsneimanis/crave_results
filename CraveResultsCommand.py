@@ -1,0 +1,25 @@
+import enum
+
+
+class CraveResultsCommand(enum.IntEnum):
+    UPLOAD_RESULTS = enum.auto()
+    LIST_EXPERIMENTS = enum.auto()
+    REMOVE_EXPERIMENT = enum.auto()
+    GET_RUNS = enum.auto()
+    GET_FIELDS = enum.auto()
+    GET_FIELD = enum.auto()
+    GET_ROW = enum.auto()
+    GET_HISTORY_BY_ID = enum.auto()
+    GET_HISTORY_BY_TIME = enum.auto()
+    GET_SUMMARY = enum.auto()
+    GET_ARTIFACT = enum.auto()
+    GET_FILE = enum.auto()
+    REMOVE_HYPEROPT = enum.auto()
+    LIST_HYPEROPT = enum.auto()
+    GET_HYPEROPT = enum.auto()
+    PUT_HYPEROPT = enum.auto()
+    UPLOAD_FILE = enum.auto()
+    DOWNLOAD_FILE = enum.auto()
+    COMMAND_OK = enum.auto()
+    COMMAND_FAILED = enum.auto()
+    COMMAND_FAILED_ENCRYPTED = enum.auto()

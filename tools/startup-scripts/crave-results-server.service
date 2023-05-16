@@ -1,0 +1,22 @@
+[Unit]
+Description=crave-results server.
+Requires=network-online.target
+Requires=time-sync.target
+Requires=multi-user.target
+
+[Service]
+User=normunds
+Environment=RootDir=/home/normunds/git2/crave_results
+WorkingDirectory=/home/normunds/git2/crave_results
+ExecStart=/usr/bin/python3 crave_results_server.py
+ExecStartPre=/usr/bin/rm -f /var/run/shm/sem.crave_results_*
+ExecStartPre=/usr/bin/rm -f /var/run/shm/crave_results_db
+Restart=always
+RestartSec=2s
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=crave-results
+
+[Install]
+WantedBy=multi-user.target
