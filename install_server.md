@@ -1,6 +1,6 @@
 ## Results SQL server installation instructions
 
-    sudo apt-get install mariadb-server python3-cryptography python3-posix-ipc
+    sudo apt-get install mariadb-server python3-cryptography python3-posix-ipc python3-dotenv
     sudo mysql_secure_installation
 
     # Allow connection from any host
@@ -53,3 +53,5 @@
     sudo systemctl enable crave-results-server.service
     sudo systemctl start crave-results-server.service
     sudo systemctl status crave-results-server
+
+    # Install mariadb connector from the top of readme.md

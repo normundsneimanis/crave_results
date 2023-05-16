@@ -14,8 +14,8 @@ ExecStartPre=/usr/bin/rm -f /var/run/shm/crave_results_db
 Restart=always
 RestartSec=2s
 
-StandardOutput=syslog
-StandardError=syslog
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=crave-results
 
 [Install]
