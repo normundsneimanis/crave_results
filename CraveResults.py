@@ -7,10 +7,10 @@ import struct
 import time
 import pickle
 import traceback
-from CraveResultsLogType import CraveResultsLogType
-from CraveResultsCommand import CraveResultsCommand
-from CraveBase import _get_payload, CraveCrypt, CraveCryptTest
-from GzipRotator import GZipRotator
+from .CraveResultsLogType import CraveResultsLogType
+from .CraveResultsCommand import CraveResultsCommand
+from .CraveBase import _get_payload, CraveCrypt, CraveCryptTest
+from .GzipRotator import GZipRotator
 import threading
 import socket
 import errno
@@ -281,7 +281,7 @@ class CraveResults:
         self._append_log(struct.pack("!b", CraveResultsLogType.HYPERPARAMS) + pickle.dumps(data))
         self._restart_thread()
 
-    def log(self, data: dict, commit=True, use_history=True) -> None:
+    def log(self, data: dict) -> None:
         if not self.active or not self.initialized:
             return
         self._append_info(data)
@@ -289,7 +289,7 @@ class CraveResults:
         self._append_log(struct.pack("!b", CraveResultsLogType.LOG) + pickle.dumps(data))
         self._restart_thread()
 
-    def log_history(self, data: dict, commit=True) -> None:
+    def log_history(self, data: dict) -> None:
         if not self.active or not self.initialized:
             return
         self._append_info(data)
@@ -297,7 +297,7 @@ class CraveResults:
         self._append_log(struct.pack("!b", CraveResultsLogType.LOG_HISTORY) + pickle.dumps(data))
         self._restart_thread()
 
-    def log_summary(self, data: dict, commit=True):
+    def log_summary(self, data: dict):
         if not self.active or not self.initialized:
             return
         self._append_info(data)

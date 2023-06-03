@@ -34,7 +34,8 @@ mariadb_variables_sizes = {
         "LONGTEXT":
             lambda a: a <= 2**32-1,  # <= 2^32-1, 4'294'967'295 chars (4GB)
     },
-    float: "DOUBLE"
+    float: "DOUBLE",
+    bool: "TINYINT"
 }
 
 
@@ -42,6 +43,7 @@ type_map = {
     int: lambda a: a,
     str: lambda a: a,
     float: lambda a: a,
+    bool: lambda a: int(a),
     list: lambda a: json.dumps(a),
     dict: lambda a: json.dumps(a),
 }
@@ -284,6 +286,7 @@ class CraveResultsSql(CraveResultsBase):
             shmem.lock()
             self.logger.info("Lock wait time: %.4f" % (time.time()-lock_wait))
             db_status = shmem.get_locked()
+            # self.logger.debug("table_name: %s, db_status: %s" % (str(self.table_name), str(db_status)))
             if self.table_name not in db_status or 'existing_columns' not in db_status[self.table_name]:
                 q = f'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ' \
                     f'\'{self.dbname}\' AND TABLE_NAME = \'{self.table_name}\';'
@@ -309,6 +312,8 @@ class CraveResultsSql(CraveResultsBase):
                 data[column] = type_map[type(data[column])](data[column])
                 if type(data[column]) == str:
                     data_length = len(data[column])
+                    if update:
+                        data_length += 2
                 elif type(data[column]) == float or type(data[column]) == int:
                     data_length = data[column]
                 else:
@@ -321,6 +326,7 @@ class CraveResultsSql(CraveResultsBase):
                     data_length += current_maxlen
                     new_columns_length[column] = data_length
                 field_type = self.find_record_type(column, type(data[column]), data_length)
+                # self.logger.debug("column %s field_type %s data len: %d" % (column, field_type, data_length))
                 if column not in list(existing_columns.keys()) and column not in added_columns:
                     queries.append(f"ALTER TABLE {self.table_name} ADD COLUMN {column} {field_type}")
                     added_columns.append(column)
