@@ -87,7 +87,7 @@ class CraveResultsBase:
             database=os.environ['DB_NAME']
         )
 
-    def _select_db(self, query: str, lines=0) -> list:
+    def _select_db(self, query: str, lines=False) -> list:
         self.sql.cursor.execute(query)
         result = []
         for a in self.sql.cursor.fetchall():
@@ -290,7 +290,7 @@ class CraveResultsSql(CraveResultsBase):
             if self.table_name not in db_status or 'existing_columns' not in db_status[self.table_name]:
                 q = f'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ' \
                     f'\'{self.dbname}\' AND TABLE_NAME = \'{self.table_name}\';'
-                columns = self._select_db(q, lines=1)
+                columns = self._select_db(q, lines=True)
                 existing_columns = {i[0]: i[1] for i in columns}
                 db_status[self.table_name] = {}
                 db_status[self.table_name]['existing_columns'] = existing_columns
@@ -423,9 +423,9 @@ class CraveResultsSql(CraveResultsBase):
     def get_runs(self, experiment: str, run_identified_by: str = "") -> list:
         with self.sql:
             if run_identified_by:
-                return self._select_db(f'select id, run_time, {"r" + run_identified_by} from `{experiment}`', 1)
+                return self._select_db(f'select id, run_time, {"r" + run_identified_by} from `{experiment}`', True)
             else:
-                return self._select_db(f'select id, run_time from `{experiment}`', 1)
+                return self._select_db(f'select id, run_time from `{experiment}`', True)
 
     # Get run fields
     def get_fields(self, experiment: str) -> dict:
@@ -434,7 +434,7 @@ class CraveResultsSql(CraveResultsBase):
         columns_mapping = ["run", "config", "summary", "history", "file", "zfile", "gpu", "vmstat"]
         special_fields = ['id', 'run_time']
         with self.sql:
-            columns = self._select_db(f'SHOW columns FROM `{experiment}`', 1)
+            columns = self._select_db(f'SHOW columns FROM `{experiment}`', True)
             fields = [i[0] for i in columns]
         result = {}
         for m in columns_mapping:
@@ -460,7 +460,7 @@ class CraveResultsSql(CraveResultsBase):
             fields_ret += ['id', 'run_time']
         fields = ", ".join(fields)
         with self.sql:
-            result = self._select_db(f'select {fields} from `{experiment}', lines=1)
+            result = self._select_db(f'select {fields} from `{experiment}', lines=True)
 
         to_remove_indexes = []
         for row in result:
@@ -504,8 +504,7 @@ class CraveResultsSql(CraveResultsBase):
 
     def get_summary(self, experiment: str, field: str, run_id: int) -> list:
         with self.sql:
-            return self._process_data(self._select_db(f'select {"s"+field} from `{experiment}` where id={run_id}'),
-                                      arr=False)
+            return self._select_db(f'select {"s"+field} from `{experiment}` where id={run_id}')
 
     @staticmethod
     def _process_data(data, arr=True):

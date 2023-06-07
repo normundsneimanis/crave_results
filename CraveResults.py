@@ -10,7 +10,7 @@ import traceback
 from .CraveResultsLogType import CraveResultsLogType
 from .CraveResultsCommand import CraveResultsCommand
 from .CraveBase import _get_payload, CraveCrypt, CraveCryptTest
-from .GzipRotator import GZipRotator
+from .GzipRotator import GZipRotator, GzipRotatingFileHandler
 import threading
 import socket
 import errno
@@ -40,6 +40,8 @@ class CraveResults:
         self._send_delay = 1.
         self.connect_timeout = 5.
         self.host, self.port = os.getenv('CRAVE_RESULTS_HOST'), int(os.getenv('CRAVE_RESULTS_PORT', 65099))
+        if not self.host:
+            raise ValueError("CraveResults requires CRAVE_RESULTS_HOST to be configured")
         self.name = None
         self.experiment = None
         self.finish_thread = False
@@ -111,8 +113,7 @@ class CraveResults:
         self.logger = logging.getLogger("CraveResults")
         self.crypt.logger = self.logger
         self.logger.setLevel(logging_level)
-        log_filehandler = logging.handlers.RotatingFileHandler(filename=log_file_name, maxBytes=1024 * 1024 * 5,
-                                                               backupCount=10)
+        log_filehandler = GzipRotatingFileHandler(filename=log_file_name, maxBytes=1024 * 1024 * 5, backupCount=10)
         log_filehandler.rotator = GZipRotator()
         log_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
         log_filehandler.setFormatter(log_formatter)
