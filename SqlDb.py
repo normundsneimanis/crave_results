@@ -2,14 +2,12 @@ import time
 import mariadb
 import os
 import copy
-import traceback
 import json
 from CraveResultsCommand import CraveResultsCommand
 from typing import Dict, Union, List, Any
 import posix_ipc
 import re
 from SharedStatus import SharedStatus
-import atexit
 
 
 class CraveResultsException(Exception):
@@ -101,6 +99,7 @@ class CraveResultsBase:
 
 class CraveResultsSql(CraveResultsBase):
     allowed_chars = re.compile(r"[\w_\- ]")
+    # db_status = {}
 
     def __init__(self, log):
         super().__init__()
@@ -115,6 +114,7 @@ class CraveResultsSql(CraveResultsBase):
             with posix_ipc.Semaphore(self.semaphore_create_table) as s:
                 pass
         except posix_ipc.ExistentialError:
+            self.logger.debug("Initializing create table semaphore")
             posix_ipc.Semaphore(self.semaphore_create_table, posix_ipc.O_CREAT, initial_value=1)
 
         self.semaphore_db = "crave_results_db"
@@ -125,7 +125,7 @@ class CraveResultsSql(CraveResultsBase):
 
     def _set_metadata(self, data):
         if not self.table_name:
-            self.table_name = data['__experiment']
+            self.table_name = self._rep(data['__experiment'])
         if self.run_time == 0.0:
             self.run_time = data['__run_time']
         del data['__experiment']
@@ -280,12 +280,18 @@ class CraveResultsSql(CraveResultsBase):
         if not len(data.keys()):
             return
         shmem = None
+        stats = {}
         try:
             shmem = SharedStatus(self.semaphore_db)
             lock_wait = time.time()
             shmem.lock()
             self.logger.info("Lock wait time: %.4f" % (time.time()-lock_wait))
+
+            start_time = time.time()
             db_status = shmem.get_locked()
+            stats['db_status_time'] = "%.4f" % (time.time() - start_time)
+            # db_status = CraveResultsSql.db_status
+            start_time = time.time()
             # self.logger.debug("table_name: %s, db_status: %s" % (str(self.table_name), str(db_status)))
             if self.table_name not in db_status or 'existing_columns' not in db_status[self.table_name]:
                 q = f'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ' \
@@ -298,6 +304,7 @@ class CraveResultsSql(CraveResultsBase):
 
             else:
                 existing_columns = db_status[self.table_name]['existing_columns']
+            stats['existing_columns_time'] = "%.4f" % (time.time() - start_time)
 
             if self.run_time not in db_status[self.table_name]['lengths']:
                 db_status[self.table_name]['lengths'][self.run_time] = {}
@@ -308,6 +315,8 @@ class CraveResultsSql(CraveResultsBase):
             new_columns_length = {}
             modify_columns = {}
             queries = []
+
+            start_time = time.time()
             for column in data.keys():
                 data[column] = type_map[type(data[column])](data[column])
                 if type(data[column]) == str:
@@ -339,7 +348,9 @@ class CraveResultsSql(CraveResultsBase):
                                 self.record_type_idx(existing_columns[column], type(data[column])):
                             queries.append(f"ALTER TABLE {self.table_name} MODIFY {column} {field_type}")
                             modify_columns[column] = field_type
+            stats['modify_prepare_times'] = "%.4f" % (time.time() - start_time)
 
+            start_time = time.time()
             for q in queries:
                 try:
                     self.sql.cursor.execute(q)
@@ -350,12 +361,14 @@ class CraveResultsSql(CraveResultsBase):
                 except mariadb.ProgrammingError as e:
                     raise Exception("Exception [%s] in query %s: " % (str(e), q)) from e
             self.sql.db.commit()
+            stats['modify_times'] = "%.4f" % (time.time() - start_time)
 
             if 'error' in data.keys():
                 data['error'] = data['error'].replace("\'", "\\'")
 
             queries = []
             row_count = 0
+            start_time = time.time()
             for column in data.keys():
                 if column == 'run_time':
                     queries.append(f"INSERT INTO {self.table_name} ({column}) VALUES ({data[column]})")
@@ -372,7 +385,9 @@ class CraveResultsSql(CraveResultsBase):
                 else:
                     queries.append(f"UPDATE {self.table_name} SET {column}='{data[column]}' "
                                    f"WHERE run_time={self.run_time}")
+            stats['insert_prepare_queries_time'] = "%.4f" % (time.time() - start_time)
 
+            start_time = time.time()
             for i, column in enumerate(added_columns):
                 self.logger.debug("Adding %s %s column %s type %s with length %s" %
                                   (self.table_name, str(self.run_time), column, added_columns_types[i],
@@ -388,8 +403,12 @@ class CraveResultsSql(CraveResultsBase):
                                   (self.table_name, column, db_status[self.table_name]['existing_columns'][column],
                                    modify_columns[column]))
                 db_status[self.table_name]['existing_columns'][column] = modify_columns[column]
+            stats['modified_put_to_dbstatus_time'] = "%.4f" % (time.time() - start_time)
+            start_time = time.time()
             shmem.put_locked(db_status)
+            stats['shmem_put_time'] = "%.4f" % (time.time() - start_time)
 
+            start_time = time.time()
             for q in queries:
                 try:
                     self.sql.cursor.execute(q)
@@ -407,6 +426,8 @@ class CraveResultsSql(CraveResultsBase):
                     raise Exception("Exception [%s] in query %s: " % (str(e), "")) from e
                 row_count += 1
             self.sql.db.commit()
+            stats['insert_commit_time'] = "%.4f" % (time.time() - start_time)
+            self.logger.debug("Timing: " + str(stats))
             return
         except Exception as e:
             self.logger.error("Exception while inserting in database: %s" % str(e))

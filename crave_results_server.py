@@ -1,3 +1,4 @@
+import time
 import hashlib
 import pickle
 import shutil
@@ -12,9 +13,11 @@ from CraveBase import _get_payload, CraveCryptServer, CraveCryptError
 from CraveResultsCommand import CraveResultsCommand
 from CraveResultsLogType import CraveResultsLogType
 from CraveResultsHyperopt import CraveResultsHyperopt
+from CraveResultsSharedStatus import CraveResultsSharedStatus
 from SqlDb import CraveResultsSql, command_sqldb_mapping
 from GzipRotator import GZipRotator
 import struct
+from collections import deque
 
 
 class ThreadedServer(object):
@@ -34,8 +37,16 @@ class ThreadedServer(object):
                     self.all_files[os.path.basename(f)] = os.path.join(d, f)
 
         self.hyperopt = CraveResultsHyperopt(log)
-        self.periodic_save_cbs = [self.join_threads, self.hyperopt.save_data]
-        self.interrupt_cbs = [self.hyperopt.save_data]
+        self.shared_status = CraveResultsSharedStatus(log)
+        self.periodic_save_cbs = [self.join_threads, self.hyperopt.save_data, self.shared_status.save_data]
+        self.interrupt_cbs = [self.hyperopt.save_data, self.shared_status.save_data, self.join_inserter]
+        self.stopping = threading.Event()
+        self.new_work = deque()
+        self.new_work_file = "new_work_data.pickle"
+        if os.path.isfile(self.new_work_file):
+            with open(self.new_work_file, "rb") as fi:
+                self.new_work = pickle.loads(fi.read())
+        self.new_work_lock = threading.Lock()
 
         self.crypt = CraveCryptServer(log)
 
@@ -44,12 +55,42 @@ class ThreadedServer(object):
         signal.signal(signal.SIGALRM, self.periodic_save)
         signal.alarm(30)
         log.info("Starting")
+        self.threads_inserter = []
+        # for _ in range(3):
+        inserter = threading.Thread(target=self.insert_thread, args=())
+        inserter.start()
+        self.threads_inserter.append(inserter)
+
+    def join_inserter(self):
+        log.debug("Stopping inserter threads")
+        threads_joined = []
+        for thread in self.threads_inserter:
+            log.debug("Waiting for thread %s" % str(thread))
+            thread.join(None)
+            if not thread.is_alive():
+                threads_joined.append(thread)
+        for thread in threads_joined:
+            self.threads_inserter.remove(thread)
+        if len(threads_joined) > 0:
+            log.info("Joined %d thread(s)" % len(threads_joined))
+        if len(self.threads_inserter):
+            log.info("%d threads still alive" % len(self.threads_inserter))
+
+        self.new_work_lock.acquire()
+        if len(self.new_work):
+            with open(self.new_work_file, "wb") as fi:
+                fi.write(pickle.dumps(self.new_work))
+        else:
+            if os.path.isfile(self.new_work_file):
+                os.unlink(self.new_work_file)
+        self.new_work_lock.release()
 
     def join_threads(self, wait=False):
         threads_joined = []
         for thread in self.threads:
             if wait:
-                thread.join(1.)
+                log.debug("Waiting for thread %s" % str(thread))
+                thread.join(None)
             else:
                 thread.join(0.)
             if not thread.is_alive():
@@ -68,9 +109,12 @@ class ThreadedServer(object):
 
     def interrupt_handler(self, sig, frame):
         log.info("Interrupted.")
+        self.stopping.set()
         self.join_threads(wait=True)
+
         for cb in self.interrupt_cbs:
             cb()
+        signal.alarm(0)
         log.info("Exiting.")
         sys.exit(0)
 
@@ -78,11 +122,90 @@ class ThreadedServer(object):
         self.sock.listen(50)
         while True:
             connection, client_address = self.sock.accept()
+            if self.stopping.is_set():
+                log.info("Closing connection from client %s:%s as server is stopping" %
+                         (client_address[0], client_address[1]))
+                connection.close()
+                continue
             connection.settimeout(60)
             log.debug('Connection from %s:%s' % (client_address[0], client_address[1]))
             thread = threading.Thread(target=self.accept, args=(connection, client_address))
             thread.start()
             self.threads.append(thread)
+
+    def insert_thread(self):
+        log.info("Starting insert_thread")
+        sql_db = CraveResultsSql(log)
+        while True:
+            if self.stopping.is_set():
+                break
+            start_time = time.time()
+            self.new_work_lock.acquire()
+            lock_acquire_time = time.time() - start_time
+            if len(self.new_work):
+                data = self.new_work.popleft()
+                num_left = len(self.new_work)
+                self.new_work_lock.release()
+            else:
+                self.new_work_lock.release()
+                time.sleep(1.)
+                continue
+            start_time = time.time()
+            for portion in data:
+                command = struct.unpack("!b", portion[0:1])[0]
+                portion_start_time = time.time()
+                if command == CraveResultsLogType.INIT:
+                    log.info("Processing CraveResultsLogType.INIT")
+                    sql_db.init(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.HYPERPARAMS:
+                    log.info("Processing CraveResultsLogType.HYPERPARAMS")
+                    sql_db.config(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.LOG:
+                    log.info("Processing CraveResultsLogType.LOG")
+                    sql_db.log(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.LOG_SUMMARY:
+                    log.info("Processing CraveResultsLogType.LOG_SUMMARY")
+                    sql_db.log_summary(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.LOG_HISTORY:
+                    log.info("Processing CraveResultsLogType.LOG_HISTORY")
+                    sql_db.log_history(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.LOG_ARTIFACT:
+                    log.info("Processing CraveResultsLogType.LOG_ARTIFACT")
+                    sql_db.log_artifact(pickle.loads(portion[1:]))
+                elif command == CraveResultsLogType.BINARY:
+                    log.info("Processing CraveResultsLogType.BINARY")
+                    data_len = struct.unpack("!L", portion[1:5])[0]
+                    pickle_len = struct.unpack("!H", portion[5:7])[0]
+                    log.info("Data len: %d pickle len: %d" % (data_len, pickle_len))
+                    file_contents = portion[7:7 + data_len]
+                    blake = hashlib.blake2b()
+                    blake.update(file_contents)
+                    checksum = blake.hexdigest()
+                    if not len(portion[7 + data_len:]) == pickle_len:
+                        log.error("Pickle length invalid. Expected %d got %d" %
+                                  (pickle_len, len(portion[7 + data_len:])))
+                    data = pickle.loads(portion[7 + data_len:])
+                    if checksum != data['checksum']:
+                        log.error("checksum mismatch")
+                    else:
+                        log.debug("Checksum OK")
+                    file_dir = os.path.join(self.save_dir, data['__experiment'])
+                    if not os.path.isdir(file_dir):
+                        os.mkdir(file_dir)
+                    file_path = os.path.join(file_dir, data['checksum'])
+                    with open(file_path, "wb") as f:
+                        f.write(file_contents)
+                    log.info("Saved data as %s" % file_path)
+                    self.all_files_lock.acquire()
+                    self.all_files[checksum] = file_path
+                    self.all_files_lock.release()
+                    sql_db.log_file(data)
+                else:
+                    log.error("Unknown CraveResultsLogType: %s" % str(command))
+                log.debug("Processed portion in %.4f seconds" % (time.time() - portion_start_time))
+            log.debug("Packet processing time: %.4f (lock: %.4f, left: %d)" %
+                      ((time.time() - start_time), lock_acquire_time, num_left))
+        log.info("Leaving insert_thread")
 
     def accept(self, connection, client_address):
         client_name = None
@@ -220,7 +343,7 @@ class ThreadedServer(object):
                 log.info("Processing CraveResultsCommand.GET_HYPEROPT")
                 payload = _get_payload(log, connection, client_address, received[1:])
                 if payload is None:
-                    self._return_error(connection, client_address, "Incomplete message received for removing hyperopt")
+                    self._return_error(connection, client_address, "Incomplete message received for getting hyperopt")
                     return
                 client_name, payload = self.crypt.decrypt(payload)
                 name = pickle.loads(payload)
@@ -232,7 +355,7 @@ class ThreadedServer(object):
                 log.info("Processing CraveResultsCommand.PUT_HYPEROPT")
                 payload = _get_payload(log, connection, client_address, received[1:])
                 if payload is None:
-                    self._return_error(connection, client_address, "Incomplete message received for removing hyperopt")
+                    self._return_error(connection, client_address, "Incomplete message received for updating hyperopt")
                     return
                 client_name, payload = self.crypt.decrypt(payload)
                 name, data = pickle.loads(payload)
@@ -253,6 +376,96 @@ class ThreadedServer(object):
                     log.exception(e)
                 finally:
                     self.hyperopt.lock.release()
+            elif request_type == CraveResultsCommand.LIST_SHARED_STATUS:
+                log.info("Processing CraveResultsCommand.LIST_SHARED_STATUS")
+                payload = _get_payload(log, connection, client_address, received[1:])
+                if payload is None:
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for listing shared status")
+                    return
+                client_name, payload = self.crypt.decrypt(payload)
+                return_data = self.crypt.encrypt(client_name, pickle.dumps(self.shared_status.list()))
+                connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
+                connection.close()
+
+            elif request_type == CraveResultsCommand.UPDATE_SHARED_STATUS:
+                log.info("Processing CraveResultsCommand.UPDATE_SHARED_STATUS")
+                payload = _get_payload(log, connection, client_address, received[1:])
+                if payload is None:
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for getting shared status")
+                    return
+                client_name, payload = self.crypt.decrypt(payload)
+                name = pickle.loads(payload)
+                shared_status = self.shared_status.get(name)
+                if shared_status is None:
+                    self._return_error(connection, client_address,
+                                       "Shared status with this name is not initialized")
+                    return
+                return_data = self.crypt.encrypt(client_name, pickle.dumps(shared_status))
+                connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
+                log.debug("Sent %d bytes (w/o header), waiting for answer" % len(return_data))
+                connection.settimeout(5.)
+                try:
+                    received = connection.recv(65535)
+                except socket.timeout:
+                    log.warning("Timeout waiting for status update.")
+                    connection.close()
+                    return
+                log.debug('Received %d bytes from %s:%s' % (len(received), client_address[0], client_address[1]))
+                if len(received) == 0:
+                    log.info("Client closed connection. Dropping session.")
+                    connection.close()
+                    return
+                payload = _get_payload(log, connection, client_address, received)
+                client_name, payload = self.crypt.decrypt(payload)
+                name, new_data = pickle.loads(payload)
+                if not self.shared_status.update(name, new_data):
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for updating shared status")
+                    return
+                return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
+                connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
+                                               len(return_data)) + return_data)
+                connection.close()
+
+            elif request_type == CraveResultsCommand.CREATE_SHARED_STATUS:
+                log.info("Processing CraveResultsCommand.CREATE_SHARED_STATUS")
+                payload = _get_payload(log, connection, client_address, received[1:])
+                if payload is None:
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for updating shared status")
+                    return
+                client_name, payload = self.crypt.decrypt(payload)
+                name, value = pickle.loads(payload)
+                self.shared_status.lock.acquire()
+                self.shared_status.create(name, value)
+                self.shared_status.lock.release()
+                return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
+                connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
+                                               len(return_data)) + return_data)
+                connection.close()
+
+            elif request_type == CraveResultsCommand.REMOVE_SHARED_STATUS:
+                log.info("Processing CraveResultsCommand.REMOVE_SHARED_STATUS")
+                payload = _get_payload(log, connection, client_address, received[1:])
+                if payload is None:
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for removing shared status")
+                    return
+                client_name, payload = self.crypt.decrypt(payload)
+                name = pickle.loads(payload)
+                return_data = self.shared_status.remove(name)
+                if not return_data:
+                    self._return_error(connection, client_address, "Failed to remove shared status. Does it exist?",
+                                       client_name)
+                    return
+                else:
+                    return_data = self.crypt.encrypt(client_name, pickle.dumps(return_data))
+                    connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
+                                                   len(return_data)) + return_data)
+                    connection.close()
+
             else:
                 self._return_error(connection, client_address, "Message type %d not implemented" % request_type)
         except Exception as e:
@@ -293,6 +506,7 @@ class ThreadedServer(object):
         connection.close()
 
     def accept_results(self, connection, client_address, new_data):
+        start_time = time.time()
         payload = _get_payload(log, connection, client_address, new_data)
         if payload is None:
             self._return_error(connection, client_address, "Incomplete message received")
@@ -321,64 +535,18 @@ class ThreadedServer(object):
                 self._return_error(connection, client_address, "Incomplete portion (num: %d, %d/%d)" %
                                    (portion_num, portion_len, len(payload[cursor+4:])))
                 return
-        sql_db = CraveResultsSql(log)
-        for portion in data:
-            command = struct.unpack("!b", portion[0:1])[0]
-            if command == CraveResultsLogType.INIT:
-                log.info("Processing CraveResultsLogType.INIT")
-                sql_db.init(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.HYPERPARAMS:
-                log.info("Processing CraveResultsLogType.HYPERPARAMS")
-                sql_db.config(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.LOG:
-                log.info("Processing CraveResultsLogType.LOG")
-                sql_db.log(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.LOG_SUMMARY:
-                log.info("Processing CraveResultsLogType.LOG_SUMMARY")
-                sql_db.log_summary(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.LOG_HISTORY:
-                log.info("Processing CraveResultsLogType.LOG_HISTORY")
-                sql_db.log_history(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.LOG_ARTIFACT:
-                log.info("Processing CraveResultsLogType.LOG_ARTIFACT")
-                sql_db.log_artifact(pickle.loads(portion[1:]))
-            elif command == CraveResultsLogType.BINARY:
-                log.info("Processing CraveResultsLogType.BINARY")
-                data_len = struct.unpack("!L", portion[1:5])[0]
-                pickle_len = struct.unpack("!H", portion[5:7])[0]
-                log.info("Data len: %d pickle len: %d" % (data_len, pickle_len))
-                file_contents = portion[7:7+data_len]
-                blake = hashlib.blake2b()
-                blake.update(file_contents)
-                checksum = blake.hexdigest()
-                if not len(portion[7 + data_len:]) == pickle_len:
-                    log.error("Pickle length invalid. Expected %d got %d" %
-                              (pickle_len, len(portion[7 + data_len:])))
-                data = pickle.loads(portion[7+data_len:])
-                if checksum != data['checksum']:
-                    log.error("checksum mismatch")
-                else:
-                    log.debug("Checksum OK")
-                file_dir = os.path.join(self.save_dir, data['__experiment'])
-                if not os.path.isdir(file_dir):
-                    os.mkdir(file_dir)
-                file_path = os.path.join(file_dir, data['checksum'])
-                with open(file_path, "wb") as f:
-                    f.write(file_contents)
-                log.info("Saved data as %s" % file_path)
-                self.all_files_lock.acquire()
-                self.all_files[checksum] = file_path
-                self.all_files_lock.release()
-                sql_db.log_file(data)
-            else:
-                message = "Unknown CraveResultsLogType: %s" % str(command)
-                self._return_error(connection, client_address, message, client)
-                return
 
         return_data = struct.pack("!b", CraveResultsCommand.COMMAND_OK)
         connection.sendall(return_data)
         connection.close()
-        log.debug("Success.")
+
+        start_time_lock = time.time()
+        self.new_work_lock.acquire()
+        lock_acquire_time = time.time() - start_time_lock
+        self.new_work.append(data)
+        self.new_work_lock.release()
+
+        log.debug("Success in %.4f seconds (lock: %.4f)." % ((time.time() - start_time), lock_acquire_time))
 
 
 def run_server():

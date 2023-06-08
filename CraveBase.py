@@ -14,7 +14,7 @@ import os
 def _get_payload(log, connection, client_address, new_data):
     payload_length = struct.unpack("!L", new_data[0:4])[0]
     new_data_len = len(new_data[4:])
-    log.debug("_get_payload() got request for %d bytes with %d bytes already" % (payload_length, new_data_len))
+    # log.debug("_get_payload() got request for %d bytes with %d bytes already" % (payload_length, new_data_len))
     new_data_ = [new_data[4:]]
 
     if payload_length == new_data_len:

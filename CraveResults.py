@@ -59,6 +59,7 @@ class CraveResults:
         self.logger.addHandler(console_handler)
         self.crypt = CraveCrypt(self.logger)
         self.semaphore_uploader_name = "crave_results_file_uploader"
+        self.shared_status_socket = None
 
         if not posix_ipc.SEMAPHORE_TIMEOUT_SUPPORTED:
             raise CraveResultsException("CraveResults requires OS with sem_timedwait() support")
@@ -176,14 +177,16 @@ class CraveResults:
                         sock = self._create_socket()
                         sock.sendall(whole_packet)
 
-                        sock.settimeout(5.0)
+                        sock.settimeout(max(30., (len(whole_packet)/1024/1024)))
                         received = sock.recv(65535)
                         if self._process_answer(whole_packet, received, sock, save=False):
                             os.unlink(save_file_full)
                     except socket.timeout:
                         self.logger.debug("Timeout waiting for answer from server when re-uploading results")
+                        break
                     except Exception as e:
                         self.logger.debug("Failed re-uploading results: %s" % str(e))
+                        break
                     finally:
                         if sock:
                             sock.close()
@@ -217,7 +220,7 @@ class CraveResults:
                 sock = self._create_socket()
                 sock.sendall(packet)
 
-                sock.settimeout(5.0)
+                sock.settimeout(30.0)
                 received = sock.recv(65535)
                 self._process_answer(packet, received, sock)
 
@@ -458,7 +461,7 @@ class CraveResults:
 
         if payload_length == new_data_len:
             sock.close()
-            return answer, self.crypt.decrypt(b''.join(new_data_))
+            return answer, b''.join(new_data_)
 
         data = None
         try:
@@ -485,16 +488,14 @@ class CraveResults:
         finally:
             sock.close()
 
-        return answer, self.crypt.decrypt(data)
+        return answer, data
 
     def _handle_failure(self, answer, data):
         if answer == CraveResultsCommand.COMMAND_FAILED:
-            message_len = struct.unpack("!H", data[0:2])[0]
-            if len(data[2:]) < message_len:
-                print("Error: Server returned COMMAND_FAILED but error message is too short")
-                return
-            message = self.crypt.decrypt(data[2:]).decode()
-            print("Error: Server returned: %s" % message)
+            print("Error: Server returned: %s" % data.decode())
+        elif answer == CraveResultsCommand.COMMAND_FAILED_ENCRYPTED:
+            message = self.crypt.decrypt(data)
+            print("Error: Server returned: %s" % message.decode())
         else:
             if answer:
                 print("Error: Server returned unknown response: %d" % answer)
@@ -504,11 +505,12 @@ class CraveResults:
                   self.crypt.encrypt(pickle.dumps({"dummy": str(time.time()).encode()}))
         answer, data = self._request(request)
         if answer == CraveResultsCommand.LIST_EXPERIMENTS and data:
+            data = self.crypt.decrypt(data)
             experiments = pickle.loads(data)
             return experiments
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            return []
 
     def get_runs(self, experiment: str, run_identified_by: str = "") -> list:
         request = {
@@ -525,11 +527,12 @@ class CraveResults:
         request = struct.pack("!b", CraveResultsCommand.GET_FIELDS) + request_data
         answer, data = self._request(request)
         if answer == CraveResultsCommand.GET_FIELDS and data:
+            data = self.crypt.decrypt(data)
             fields = pickle.loads(data)
             return fields
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            return {}
 
     def get_rows(self, experiment: str, rows: dict, special=False):
         request = {
@@ -541,11 +544,12 @@ class CraveResults:
         request = struct.pack("!b", CraveResultsCommand.GET_ROW) + request_data
         answer, data = self._request(request)
         if answer == CraveResultsCommand.GET_ROW and data:
+            data = self.crypt.decrypt(data)
             fields = pickle.loads(data)
             return fields
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            return None
 
     def get_field(self, experiment: str, field: str, run_id: int) -> list:
         request = {
@@ -566,10 +570,11 @@ class CraveResults:
         request = struct.pack("!bL", CraveResultsCommand.GET_ARTIFACT, len(request)) + request
         answer, data = self._request(request)
         if answer == CraveResultsCommand.COMMAND_OK and data:
+            data = self.crypt.decrypt(data)
             return data
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            raise CraveResultsException("Failed getting file from server")
 
     def get_history(self, experiment: str, field: str, run_id: int) -> list:
         request = {
@@ -617,21 +622,109 @@ class CraveResults:
         request = struct.pack("!b", command) + request_data
         answer, data = self._request(request)
         if answer == command and data:
+            data = self.crypt.decrypt(data)
             field = pickle.loads(data)
             return field
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            return []
 
     def remove_experiment(self, experiment: str) -> bool:
         request_data = self.crypt.encrypt(pickle.dumps(experiment))
         request = struct.pack("!bL", CraveResultsCommand.REMOVE_EXPERIMENT, len(request_data)) + request_data
         answer, data = self._request(request)
         if answer == CraveResultsCommand.COMMAND_OK:
+            # data = self.crypt.decrypt(data)
             return True
         else:
             self._handle_failure(answer, data)
-            raise CraveResultsException("Failed getting answer from server")
+            return False
+
+    def shared_status_create(self, name: str, value):
+        request_data = self.crypt.encrypt(pickle.dumps([name, value]))
+        request = struct.pack("!bL", CraveResultsCommand.CREATE_SHARED_STATUS, len(request_data)) + request_data
+        answer, data = self._request(request)
+        if answer == CraveResultsCommand.COMMAND_OK:
+            return True
+        else:
+            self._handle_failure(answer, data)
+            return False
+
+    def shared_status_get(self, name: str):
+        request_data = self.crypt.encrypt(pickle.dumps(name))
+        request = struct.pack("!bL", CraveResultsCommand.UPDATE_SHARED_STATUS, len(request_data)) + request_data
+        sock = self._create_socket()
+        sock.sendall(request)
+
+        sock.settimeout(5.0)
+        try:
+            received = sock.recv(65535)
+        except socket.timeout:
+            self.logger.debug("Timeout waiting for answer from server.")
+            return None
+
+        request_type = struct.unpack("!b", received[0:1])[0]
+        if request_type == CraveResultsCommand.COMMAND_OK:
+            payload = _get_payload(self.logger, sock, (self.host, self.port), received[1:])
+            if payload is None:
+                self.logger.debug("Failed to get all packet data")
+                return None
+
+            payload = self.crypt.decrypt(payload)
+            value = pickle.loads(payload)
+            self.shared_status_socket = sock
+            return value
+        else:
+            self._handle_failure(request_type, received[1:])
+            return None
+
+    def shared_status_put(self, name: str, value) -> bool:
+        if not self.shared_status_socket:
+            raise CraveResultsException("shared_status_get() must be called before shared_status_put()")
+        if self.shared_status_socket._closed:
+            raise ValueError("Connection is closed, please call shared_status_put() immediately after "
+                             "shared_status_get()")
+        sock = self.shared_status_socket
+        request_data = self.crypt.encrypt(pickle.dumps([name, value]))
+        request = struct.pack("!L", len(request_data)) + request_data
+        sock.sendall(request)
+        sock.settimeout(5.0)
+        try:
+            received = sock.recv(65535)
+        except socket.timeout:
+            self.logger.debug("Timeout waiting for answer from server.")
+            return False
+
+        result = struct.unpack("!b", received[0:1])[0]
+        if result == CraveResultsCommand.COMMAND_OK:
+            payload = _get_payload(self.logger, sock, (self.host, self.port), received[1:])
+            if payload is None:
+                self.logger.debug("Failed to get all packet data")
+                return False
+            return True
+        else:
+            return False
+
+    def shared_status_list(self) -> list:
+        request_data = self.crypt.encrypt(pickle.dumps(True))
+        request = struct.pack("!bL", CraveResultsCommand.LIST_SHARED_STATUS, len(request_data)) + request_data
+        answer, data = self._request(request)
+        if answer == CraveResultsCommand.COMMAND_OK:
+            data = self.crypt.decrypt(data)
+            return pickle.loads(data)
+        else:
+            self._handle_failure(answer, data)
+            return []
+
+    def shared_status_remove(self, name) -> bool:
+        request_data = self.crypt.encrypt(pickle.dumps(name))
+        request = struct.pack("!bL", CraveResultsCommand.REMOVE_SHARED_STATUS, len(request_data)) + request_data
+        answer, data = self._request(request)
+        if answer == CraveResultsCommand.COMMAND_OK:
+            return True
+        else:
+            self._handle_failure(answer, data)
+            return False
 
 
 class CraveResultsTestUnencrypted(CraveResults):

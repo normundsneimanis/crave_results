@@ -26,21 +26,21 @@ class CraveResultsHyperopt:
             try:
                 with open(self.save_file, "rb") as f:
                     self.hyperopt_data = pickle.loads(f.read())
-                    self.logger.info("CraveResultsHyperopt() read data from file successfuly")
+                    self.logger.info("CraveResultsHyperopt() read data from file successfully")
             except Exception as e:
                 self.logger.error("CraveResultsHyperopt() failed reading saved file: %s" % str(e))
                 self.hyperopt_data = {}
         self.lock = threading.Lock()
-        self.updated = False
+        self.updated = threading.Event()
 
     def save_data(self):
-        if not self.updated:
+        if not self.updated.is_set():
             return
         self.logger.debug("CraveResultsHyperopt() saving data")
         self.lock.acquire()
         with open(self.save_file, "wb") as f:
             f.write(pickle.dumps(self.hyperopt_data))
-        self.updated = False
+        self.updated.clear()
         self.lock.release()
 
     # LIST_HYPEROPT
@@ -57,7 +57,7 @@ class CraveResultsHyperopt:
         if name in self.hyperopt_data:
             del self.hyperopt_data[name]
             removed = True
-            self.updated = True
+            self.updated.set()
             self.logger.info("CraveResultsHyperopt() removing %s" % name)
         self.lock.release()
         return removed
@@ -69,7 +69,7 @@ class CraveResultsHyperopt:
         else:
             self.logger.info("CraveResultsHyperopt() creating %s" % name)
             self.hyperopt_data[name] = hyperopt.Trials()
-            self.updated = True
+            self.updated.set()
 
         return self.hyperopt_data[name]
 
@@ -81,5 +81,5 @@ class CraveResultsHyperopt:
             return False
         self.hyperopt_data[name] = hyperopt.trials_from_docs(
             list(self.hyperopt_data[name]) + new_data)
-        self.updated = True
+        self.updated.set()
         return True

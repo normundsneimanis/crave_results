@@ -1,4 +1,4 @@
-## Results SQL server installation instructions
+## Installation instructions
 
     sudo apt-get install mariadb-server python3-cryptography python3-posix-ipc python3-dotenv
     sudo mysql_secure_installation
@@ -47,6 +47,7 @@
     mkdir /var/lib/crave_results_db
     mkdir /var/lib/crave_results_db/files
     mkdir /var/lib/crave_results_db/hyperopt
+    mkdir /var/lib/crave_results_db/shared_status
     chown -R <user> /var/lib/crave_results_db
     sudo cp tools/startup-scripts/crave-results-server.service /etc/systemd/system
     sudo systemctl daemon-reload

@@ -23,3 +23,7 @@ class CraveResultsCommand(enum.IntEnum):
     COMMAND_OK = enum.auto()
     COMMAND_FAILED = enum.auto()
     COMMAND_FAILED_ENCRYPTED = enum.auto()
+    REMOVE_SHARED_STATUS = enum.auto()
+    LIST_SHARED_STATUS = enum.auto()
+    UPDATE_SHARED_STATUS = enum.auto()
+    CREATE_SHARED_STATUS = enum.auto()
