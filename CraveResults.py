@@ -656,7 +656,7 @@ class CraveResults:
         sock = self._create_socket()
         sock.sendall(request)
 
-        sock.settimeout(5.0)
+        sock.settimeout(10.0)
         try:
             received = sock.recv(65535)
         except socket.timeout:
@@ -688,7 +688,7 @@ class CraveResults:
         request_data = self.crypt.encrypt(pickle.dumps([name, value]))
         request = struct.pack("!L", len(request_data)) + request_data
         sock.sendall(request)
-        sock.settimeout(5.0)
+        sock.settimeout(10.0)
         try:
             received = sock.recv(65535)
         except socket.timeout:
