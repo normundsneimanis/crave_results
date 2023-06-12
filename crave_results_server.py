@@ -1,3 +1,4 @@
+import copy
 import time
 import hashlib
 import pickle
@@ -15,9 +16,87 @@ from CraveResultsLogType import CraveResultsLogType
 from CraveResultsHyperopt import CraveResultsHyperopt
 from CraveResultsSharedStatus import CraveResultsSharedStatus
 from SqlDb import CraveResultsSql, command_sqldb_mapping
-from GzipRotator import GZipRotator
+from GzipRotator import GZipRotator, GzipRotatingFileHandler
 import struct
 from collections import deque
+
+
+class Aggregator:
+    map = {
+        's': CraveResultsSql.log_summary,
+        'h': CraveResultsSql.log_history,
+        'a': CraveResultsSql.log_artifact,
+    }
+
+    def __init__(self):
+        self.data = {}
+        self.start_time = time.time()
+
+    def log(self, data):
+        self.log_summary(copy.deepcopy(data))
+        self.log_history(data)
+
+    def log_summary(self, data):
+        table_name, run_time = self._get_info(data)
+
+        d = self.data[table_name][run_time]
+
+        if 's' not in d:
+            d['s'] = {}
+        d['s'].update(data)
+
+    def log_history(self, data):
+        table_name, run_time = self._get_info(data)
+
+        d = self.data[table_name][run_time]
+        if 'h' not in d:
+            d['h'] = {}
+        d = d['h']
+
+        self._update_history(data, d)
+
+    def log_artifact(self, data):
+        table_name, run_time = self._get_info(data)
+
+        d = self.data[table_name][run_time]
+        if 'a' not in d:
+            d['a'] = {}
+        d = d['a']
+        self._update_history(data, d)
+
+    @staticmethod
+    def _update_history(data, d):
+        for field in data:
+            if field not in d:
+                d[field] = str(data[field])
+            else:
+                d[field] += ", " + str(data[field])
+
+    def _get_info(self, data):
+        table_name = data['__experiment']
+        run_time = data['__run_time']
+        del data['__experiment']
+        del data['__run_time']
+        if table_name not in self.data:
+            self.data[table_name] = {}
+
+        if run_time not in self.data[table_name]:
+            self.data[table_name][run_time] = {}
+
+        return table_name, run_time
+
+    def commit(self, log_):
+        for table_name in self.data:
+            for run_time in self.data[table_name]:
+                sql_db = CraveResultsSql(log_)
+                d = self.data[table_name][run_time]
+                for t in ['s', 'h', 'a']:
+                    if t in d:
+                        d[t]['__experiment'] = table_name
+                        d[t]['__run_time'] = run_time
+                        Aggregator.map[t](sql_db, d[t])
+        self.data = {}
+        self.start_time = time.time()
 
 
 class ThreadedServer(object):
@@ -45,7 +124,11 @@ class ThreadedServer(object):
         self.new_work_file = "new_work_data.pickle"
         if os.path.isfile(self.new_work_file):
             with open(self.new_work_file, "rb") as fi:
-                self.new_work = pickle.loads(fi.read())
+                try:
+                    self.new_work = pickle.loads(fi.read())
+                except pickle.UnpicklingError as e:
+                    log.error("Failed reading data from file: %s" % str(e))
+                    self.new_work = deque()
         self.new_work_lock = threading.Lock()
 
         self.crypt = CraveCryptServer(log)
@@ -56,7 +139,6 @@ class ThreadedServer(object):
         signal.alarm(30)
         log.info("Starting")
         self.threads_inserter = []
-        # for _ in range(3):
         inserter = threading.Thread(target=self.insert_thread, args=())
         inserter.start()
         self.threads_inserter.append(inserter)
@@ -135,7 +217,8 @@ class ThreadedServer(object):
 
     def insert_thread(self):
         log.info("Starting insert_thread")
-        sql_db = CraveResultsSql(log)
+        aggregating = False
+        aggregator = Aggregator()
         while True:
             if self.stopping.is_set():
                 break
@@ -145,12 +228,15 @@ class ThreadedServer(object):
             if len(self.new_work):
                 data = self.new_work.popleft()
                 num_left = len(self.new_work)
+                if not aggregating and num_left > 100:
+                    aggregating = True
                 self.new_work_lock.release()
             else:
                 self.new_work_lock.release()
                 time.sleep(1.)
                 continue
             start_time = time.time()
+            sql_db = CraveResultsSql(log)
             for portion in data:
                 command = struct.unpack("!b", portion[0:1])[0]
                 portion_start_time = time.time()
@@ -162,16 +248,28 @@ class ThreadedServer(object):
                     sql_db.config(pickle.loads(portion[1:]))
                 elif command == CraveResultsLogType.LOG:
                     log.info("Processing CraveResultsLogType.LOG")
-                    sql_db.log(pickle.loads(portion[1:]))
+                    if aggregating:
+                        aggregator.log(pickle.loads(portion[1:]))
+                    else:
+                        sql_db.log(pickle.loads(portion[1:]))
                 elif command == CraveResultsLogType.LOG_SUMMARY:
                     log.info("Processing CraveResultsLogType.LOG_SUMMARY")
-                    sql_db.log_summary(pickle.loads(portion[1:]))
+                    if aggregating:
+                        aggregator.log_summary(pickle.loads(portion[1:]))
+                    else:
+                        sql_db.log_summary(pickle.loads(portion[1:]))
                 elif command == CraveResultsLogType.LOG_HISTORY:
                     log.info("Processing CraveResultsLogType.LOG_HISTORY")
-                    sql_db.log_history(pickle.loads(portion[1:]))
+                    if aggregating:
+                        aggregator.log_history(pickle.loads(portion[1:]))
+                    else:
+                        sql_db.log_history(pickle.loads(portion[1:]))
                 elif command == CraveResultsLogType.LOG_ARTIFACT:
                     log.info("Processing CraveResultsLogType.LOG_ARTIFACT")
-                    sql_db.log_artifact(pickle.loads(portion[1:]))
+                    if aggregating:
+                        aggregator.log_artifact(pickle.loads(portion[1:]))
+                    else:
+                        sql_db.log_artifact(pickle.loads(portion[1:]))
                 elif command == CraveResultsLogType.BINARY:
                     log.info("Processing CraveResultsLogType.BINARY")
                     data_len = struct.unpack("!L", portion[1:5])[0]
@@ -203,8 +301,16 @@ class ThreadedServer(object):
                 else:
                     log.error("Unknown CraveResultsLogType: %s" % str(command))
                 log.debug("Processed portion in %.4f seconds" % (time.time() - portion_start_time))
+                if time.time() - portion_start_time > 0.2:
+                    aggregating = True
             log.debug("Packet processing time: %.4f (lock: %.4f, left: %d)" %
                       ((time.time() - start_time), lock_acquire_time, num_left))
+            if time.time() - aggregator.start_time > 30.:
+                log.info("Committing aggregated data")
+                start_time = time.time()
+                aggregator.commit(log)
+                aggregating = False
+                log.debug("Aggregator commit time: %.4f" % (time.time() - start_time))
         log.info("Leaving insert_thread")
 
     def accept(self, connection, client_address):
@@ -559,7 +665,7 @@ if __name__ == '__main__':
     loggingLevel = logging.DEBUG
     log = logging.getLogger("crave_results_server")
     log.setLevel(loggingLevel)
-    logger = logging.handlers.RotatingFileHandler(filename=log_file_name, maxBytes=1024 * 1024 * 5, backupCount=10)
+    logger = GzipRotatingFileHandler(filename=log_file_name, maxBytes=1024 * 1024 * 5, backupCount=10)
     logger.rotator = GZipRotator()
     logFormatter = logging.Formatter("%(asctime)s %(levelname)s %(threadName)s: %(message)s")
     logger.setFormatter(logFormatter)

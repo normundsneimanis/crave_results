@@ -208,7 +208,7 @@ class CraveResultsSql(CraveResultsBase):
             self._update(data)
 
     def remove_experiment(self, name):
-        self.validate_string(name)
+        self.validate_string(self._rep(name))
 
         shmem = None
         try:
@@ -427,7 +427,7 @@ class CraveResultsSql(CraveResultsBase):
                 row_count += 1
             self.sql.db.commit()
             stats['insert_commit_time'] = "%.4f" % (time.time() - start_time)
-            self.logger.debug("Timing: " + str(stats))
+            # self.logger.debug("Timing: " + str(stats))
             return
         except Exception as e:
             self.logger.error("Exception while inserting in database: %s" % str(e))
