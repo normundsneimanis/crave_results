@@ -96,7 +96,6 @@ class Aggregator:
                         d[t]['__run_time'] = run_time
                         Aggregator.map[t](sql_db, d[t])
         self.data = {}
-        self.start_time = time.time()
 
 
 class ThreadedServer(object):
@@ -228,9 +227,11 @@ class ThreadedServer(object):
             if len(self.new_work):
                 data = self.new_work.popleft()
                 num_left = len(self.new_work)
-                if not aggregating and num_left > 100:
-                    aggregating = True
                 self.new_work_lock.release()
+                if not aggregating and num_left > 100:
+                    log.debug("Enabling aggregator num_left")
+                    aggregating = True
+                    aggregator.start_time = time.time()
             else:
                 self.new_work_lock.release()
                 time.sleep(1.)
@@ -300,17 +301,19 @@ class ThreadedServer(object):
                     sql_db.log_file(data)
                 else:
                     log.error("Unknown CraveResultsLogType: %s" % str(command))
-                log.debug("Processed portion in %.4f seconds" % (time.time() - portion_start_time))
-                if time.time() - portion_start_time > 0.2:
+                log.debug("Processed portion in %.5f seconds" % (time.time() - portion_start_time))
+                if not aggregating and time.time() - portion_start_time > 0.2:
+                    log.debug("Enabling aggregator portion")
                     aggregating = True
-            log.debug("Packet processing time: %.4f (lock: %.4f, left: %d)" %
+                    aggregator.start_time = time.time()
+            log.debug("Packet processing time: %.5f (lock: %.5f, left: %d)" %
                       ((time.time() - start_time), lock_acquire_time, num_left))
-            if time.time() - aggregator.start_time > 30.:
+            if aggregating and time.time() - aggregator.start_time > 30.:
                 log.info("Committing aggregated data")
                 start_time = time.time()
                 aggregator.commit(log)
                 aggregating = False
-                log.debug("Aggregator commit time: %.4f" % (time.time() - start_time))
+                log.debug("Aggregator commit time: %.5f" % (time.time() - start_time))
         log.info("Leaving insert_thread")
 
     def accept(self, connection, client_address):

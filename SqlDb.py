@@ -283,9 +283,9 @@ class CraveResultsSql(CraveResultsBase):
         stats = {}
         try:
             shmem = SharedStatus(self.semaphore_db)
-            lock_wait = time.time()
+            # lock_wait = time.time()
             shmem.lock()
-            self.logger.info("Lock wait time: %.4f" % (time.time()-lock_wait))
+            # self.logger.info("Lock wait time: %.4f" % (time.time()-lock_wait))
 
             start_time = time.time()
             db_status = shmem.get_locked()
