@@ -117,6 +117,8 @@ class ThreadedServer(object):
         self.hyperopt = CraveResultsHyperopt(log)
         self.shared_status = CraveResultsSharedStatus(log)
         self.periodic_save_cbs = [self.join_threads, self.hyperopt.save_data, self.shared_status.save_data]
+        self.periodic_save_i = 0
+        self.periodic_save_cbs2 = [self.save_new_work]
         self.interrupt_cbs = [self.hyperopt.save_data, self.shared_status.save_data, self.join_inserter]
         self.stopping = threading.Event()
         self.new_work = deque()
@@ -156,12 +158,17 @@ class ThreadedServer(object):
             log.info("Joined %d thread(s)" % len(threads_joined))
         if len(self.threads_inserter):
             log.info("%d threads still alive" % len(self.threads_inserter))
+        self.save_new_work()
 
+    def save_new_work(self):
+        log.info("Saving new work. Waiting for new work lock")
         self.new_work_lock.acquire()
         if len(self.new_work):
+            log.info("Saving new work")
             with open(self.new_work_file, "wb") as fi:
                 fi.write(pickle.dumps(self.new_work))
         else:
+            log.info("No new work, removing save file, if exists")
             if os.path.isfile(self.new_work_file):
                 os.unlink(self.new_work_file)
         self.new_work_lock.release()
@@ -187,6 +194,11 @@ class ThreadedServer(object):
         signal.alarm(30)
         for cb in self.periodic_save_cbs:
             cb()
+        self.periodic_save_i += 1
+        if self.periodic_save_i % 10 == 0:
+            self.periodic_save_i = 0
+            for cb in self.periodic_save_cbs2:
+                cb()
 
     def interrupt_handler(self, sig, frame):
         log.info("Interrupted.")
@@ -308,8 +320,8 @@ class ThreadedServer(object):
                     aggregator.start_time = time.time()
             log.debug("Packet processing time: %.5f (lock: %.5f, left: %d)" %
                       ((time.time() - start_time), lock_acquire_time, num_left))
-            if aggregating and time.time() - aggregator.start_time > 30.:
-                log.info("Committing aggregated data")
+            if aggregating and time.time() - aggregator.start_time > 60. and num_left == 0:
+                log.info("Committing aggregated data %.2f" % (time.time() - aggregator.start_time))
                 start_time = time.time()
                 aggregator.commit(log)
                 aggregating = False
@@ -653,9 +665,11 @@ class ThreadedServer(object):
         self.new_work_lock.acquire()
         lock_acquire_time = time.time() - start_time_lock
         self.new_work.append(data)
+        new_work_len = len(self.new_work)
         self.new_work_lock.release()
 
-        log.debug("Success in %.4f seconds (lock: %.4f)." % ((time.time() - start_time), lock_acquire_time))
+        log.debug("Success in %.4f seconds (lock: %.4f, len: %d)." %
+                  ((time.time() - start_time), lock_acquire_time, new_work_len))
 
 
 def run_server():
