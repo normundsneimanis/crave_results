@@ -86,13 +86,19 @@ class CraveCryptServer:
     def __init__(self, logger):
         self.server_key, self.server_pubkey = get_client_keys("server")
         self.client_pubkeys = {}
+        self.refresh_keys()
+        self.logger = logger
+
+    def refresh_keys(self):
+        client_pubkeys = {}
         for f in os.listdir("."):
             if f.endswith(".pub"):
                 if f == 'server.pub':
                     continue
                 with open(f, "rb") as fi:
-                    self.client_pubkeys[f.replace(".pub", "")] = X25519PublicKey.from_public_bytes(fi.read())
-        self.logger = logger
+                    client_pubkeys[f.replace(".pub", "")] = X25519PublicKey.from_public_bytes(fi.read())
+
+        self.client_pubkeys = client_pubkeys
 
     def encrypt(self, client, payload):
         if client not in self.client_pubkeys.keys():

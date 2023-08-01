@@ -117,9 +117,10 @@ class ThreadedServer(object):
 
         self.hyperopt = CraveResultsHyperopt(log)
         self.shared_status = CraveResultsSharedStatus(log)
+        self.crypt = CraveCryptServer(log)
         self.periodic_save_cbs = [self.join_threads, self.hyperopt.save_data, self.shared_status.save_data]
         self.periodic_save_i = 0
-        self.periodic_save_cbs2 = [self.save_new_work]
+        self.periodic_save_cbs2 = [self.save_new_work, self.crypt.refresh_keys]
         self.interrupt_cbs = [self.hyperopt.save_data, self.shared_status.save_data, self.join_inserter]
         self.stopping = threading.Event()
         self.new_work = deque()
@@ -132,8 +133,6 @@ class ThreadedServer(object):
                     log.error("Failed reading data from file: %s" % str(e))
                     self.new_work = deque()
         self.new_work_lock = threading.Lock()
-
-        self.crypt = CraveCryptServer(log)
 
         signal.signal(signal.SIGINT, self.interrupt_handler)
         signal.signal(signal.SIGTERM, self.interrupt_handler)
