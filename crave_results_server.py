@@ -106,6 +106,7 @@ class ThreadedServer(object):
         self.sock.bind(('0.0.0.0', self.port))
         self.threads = []
         self.save_dir = "/var/lib/crave_results_db/files"
+        self.dataset_dir = "/var/lib/crave_results_db/datasets"
         self.all_files = {}
         self.all_files_lock = threading.Lock()
         for d in os.listdir(self.save_dir):
@@ -359,11 +360,11 @@ class ThreadedServer(object):
                 request = pickle.loads(payload)
                 if 'checksum' not in request:
                     self._return_error(connection, client_address,
-                                       "'checksum' must be in request")
+                                       "'checksum' must be in request", client_name)
                     return
                 if request['checksum'] not in self.all_files:
                     self._return_error(connection, client_address,
-                                       "File with requested checksum does not exist on server")
+                                       "File with requested checksum does not exist on server", client_name)
                     return
                 with open(self.all_files[request['checksum']], "rb") as f:
                     file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
@@ -384,14 +385,14 @@ class ThreadedServer(object):
                 request = pickle.loads(payload)
                 if 'experiment' not in request or 'field' not in request or 'run_id' not in request:
                     self._return_error(connection, client_address,
-                                       "Request must contain experiment: str, field: str, run_id: float")
+                                       "Request must contain experiment: str, field: str, run_id: float", client_name)
                     return
                 sql_db = CraveResultsSql(log)
                 data = sql_db.get_artifact(**request)
                 if data['checksum'] not in self.all_files:
                     log.error("File not found for %s" % str(request))
                     self._return_error(connection, client_address,
-                                       "Requested file has not found in storage.")
+                                       "Requested file has not found in storage.", client_name)
                     return
                 with open(self.all_files[data['checksum']], "rb") as f:
                     file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
@@ -415,7 +416,7 @@ class ThreadedServer(object):
                     CraveResultsSql.validate_string(name)
                 except ValueError as e:
                     self._return_error(connection, client_address,
-                                       "Invalid table name given: %s" % str(e))
+                                       "Invalid table name given: %s" % str(e), client_name)
                     return
                 sql_db.remove_experiment(name)
                 log.info("Removed experiment %s" % name)
@@ -521,7 +522,7 @@ class ThreadedServer(object):
                 shared_status = self.shared_status.get(name)
                 if shared_status is None:
                     self._return_error(connection, client_address,
-                                       "Shared status with this name is not initialized")
+                                       "Shared status with this name is not initialized", client_name)
                     return
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(shared_status))
                 connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
@@ -543,7 +544,7 @@ class ThreadedServer(object):
                 name, new_data = pickle.loads(payload)
                 if not self.shared_status.update(name, new_data):
                     self._return_error(connection, client_address,
-                                       "Incomplete message received for updating shared status")
+                                       "Incomplete message received for updating shared status", client_name)
                     return
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
                 connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
@@ -587,6 +588,36 @@ class ThreadedServer(object):
                                                    len(return_data)) + return_data)
                     connection.close()
 
+            elif request_type == CraveResultsCommand.GET_DATASET:
+                # TODO Send multiple files in one request
+                log.info("Processing CraveResultsCommand.GET_DATASET")
+                payload = _get_payload(log, connection, client_address, received[1:])
+                if payload is None:
+                    self._return_error(connection, client_address,
+                                       "Incomplete message received for downloading dataset")
+                    return
+                client_name, payload = self.crypt.decrypt(payload)
+                name = pickle.loads(payload)
+                if not len(name):
+                    self._return_error(connection, client_address, "File name not given",
+                                       client_name)
+                    return
+                if name[0] == '/':
+                    self._return_error(connection, client_address, "Only relative path is accepted.",
+                                       client_name)
+                    return
+                filepath = os.path.join(self.dataset_dir, name)
+                if not os.path.isfile(filepath):
+                    self._return_error(connection, client_address, "File does not exist.",
+                                       client_name)
+                    return
+                with open(filepath, "rb") as f:
+                    file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
+
+                connection.sendall(
+                    struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(file_contents_encrypted)) +
+                    file_contents_encrypted)
+                connection.close()
             else:
                 self._return_error(connection, client_address, "Message type %d not implemented" % request_type)
         except Exception as e:
@@ -607,7 +638,7 @@ class ThreadedServer(object):
             connection.sendall(struct.pack("!bL", request_type, len(return_data)) + return_data)
             connection.close()
         else:
-            raise ValueError("_return_data() called without request_data")
+            self._return_error(connection, client_address, "Empty message received")
 
     def _return_error(self, connection, client_address, message, client_name=None):
         try:

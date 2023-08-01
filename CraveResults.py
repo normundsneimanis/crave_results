@@ -726,6 +726,15 @@ class CraveResults:
             self._handle_failure(answer, data)
             return False
 
+    def get_dataset(self, name):
+        request_data = self.crypt.encrypt(pickle.dumps(name))
+        request = struct.pack("!bL", CraveResultsCommand.GET_DATASET, len(request_data)) + request_data
+
+        answer = self._get_answer(request)
+        if answer:
+            return answer
+        raise CraveResultsException("Failed getting answer from server")
+
 
 class CraveResultsTestUnencrypted(CraveResults):
     def __init__(self):

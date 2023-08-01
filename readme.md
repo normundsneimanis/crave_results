@@ -27,6 +27,11 @@ Usage example
 
     db = CraveResults()
 
+    # Get dataset file
+    file_contents = results_db.get_dataset("dataset1/file1.mmap")
+    with open("dataset1/file1.mmap", "wb") as f:
+        f.write(file_contents)
+
     config = dict(
         learning_rate=0.01,
         momentum=0.2,

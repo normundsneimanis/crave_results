@@ -49,6 +49,7 @@
     mkdir /var/lib/crave_results_db/hyperopt
     mkdir /var/lib/crave_results_db/shared_status
     chown -R <user> /var/lib/crave_results_db
+    ln -s <dataset base directory> /var/lib/crave_results_db/dataset
     sudo cp tools/startup-scripts/crave-results-server.service /etc/systemd/system
     sudo systemctl daemon-reload
     sudo systemctl enable crave-results-server.service

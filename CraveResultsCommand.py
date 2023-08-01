@@ -27,3 +27,4 @@ class CraveResultsCommand(enum.IntEnum):
     LIST_SHARED_STATUS = enum.auto()
     UPDATE_SHARED_STATUS = enum.auto()
     CREATE_SHARED_STATUS = enum.auto()
+    GET_DATASET = enum.auto()
