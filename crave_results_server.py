@@ -117,6 +117,7 @@ class ThreadedServer(object):
 
         self.hyperopt = CraveResultsHyperopt(log)
         self.shared_status = CraveResultsSharedStatus(log)
+        self.shared_status_lock = threading.Lock()
         self.crypt = CraveCryptServer(log)
         self.periodic_save_cbs = [self.join_threads, self.hyperopt.save_data, self.shared_status.save_data]
         self.periodic_save_i = 0
@@ -125,6 +126,7 @@ class ThreadedServer(object):
         self.stopping = threading.Event()
         self.new_work = deque()
         self.new_work_file = "new_work_data.pickle"
+        self.new_work_changed = False
         if os.path.isfile(self.new_work_file):
             with open(self.new_work_file, "rb") as fi:
                 try:
@@ -161,16 +163,17 @@ class ThreadedServer(object):
         self.save_new_work()
 
     def save_new_work(self):
-        log.info("Saving new work. Waiting for new work lock")
         self.new_work_lock.acquire()
-        if len(self.new_work):
-            log.info("Saving new work")
-            with open(self.new_work_file, "wb") as fi:
-                fi.write(pickle.dumps(self.new_work))
-        else:
-            log.info("No new work, removing save file, if exists")
-            if os.path.isfile(self.new_work_file):
-                os.unlink(self.new_work_file)
+        if self.new_work_changed:
+            if len(self.new_work):
+                log.info("Saving new work")
+                with open(self.new_work_file, "wb") as fi:
+                    fi.write(pickle.dumps(self.new_work))
+            else:
+                log.info("No new work, removing save file, if exists")
+                if os.path.isfile(self.new_work_file):
+                    os.unlink(self.new_work_file)
+            self.new_work_changed = False
         self.new_work_lock.release()
 
     def join_threads(self, wait=False):
@@ -239,6 +242,7 @@ class ThreadedServer(object):
             if len(self.new_work):
                 data = self.new_work.popleft()
                 num_left = len(self.new_work)
+                self.new_work_changed = True
                 self.new_work_lock.release()
                 if not aggregating and num_left > 100:
                     log.debug("Enabling aggregator num_left")
@@ -246,7 +250,14 @@ class ThreadedServer(object):
                     aggregator.start_time = time.time()
             else:
                 self.new_work_lock.release()
-                time.sleep(1.)
+                if aggregating and time.time() - aggregator.start_time > 60. and num_left == 0:
+                    log.info("Committing aggregated data %.2f" % (time.time() - aggregator.start_time))
+                    start_time = time.time()
+                    aggregator.commit(log)
+                    aggregating = False
+                    log.debug("Aggregator commit time: %.5f" % (time.time() - start_time))
+                else:
+                    time.sleep(1.)
                 continue
             start_time = time.time()
             sql_db = CraveResultsSql(log)
@@ -518,10 +529,12 @@ class ThreadedServer(object):
                     return
                 client_name, payload = self.crypt.decrypt(payload)
                 name = pickle.loads(payload)
+                self.shared_status_lock.acquire()
                 shared_status = self.shared_status.get(name)
                 if shared_status is None:
                     self._return_error(connection, client_address,
                                        "Shared status with this name is not initialized", client_name)
+                    self.shared_status_lock.release()
                     return
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(shared_status))
                 connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
@@ -532,11 +545,13 @@ class ThreadedServer(object):
                 except socket.timeout:
                     log.warning("Timeout waiting for status update.")
                     connection.close()
+                    self.shared_status_lock.release()
                     return
                 log.debug('Received %d bytes from %s:%s' % (len(received), client_address[0], client_address[1]))
                 if len(received) == 0:
                     log.info("Client closed connection. Dropping session.")
                     connection.close()
+                    self.shared_status_lock.release()
                     return
                 payload = _get_payload(log, connection, client_address, received)
                 client_name, payload = self.crypt.decrypt(payload)
@@ -544,11 +559,13 @@ class ThreadedServer(object):
                 if not self.shared_status.update(name, new_data):
                     self._return_error(connection, client_address,
                                        "Incomplete message received for updating shared status", client_name)
+                    self.shared_status_lock.release()
                     return
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
                 connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
                                                len(return_data)) + return_data)
                 connection.close()
+                self.shared_status_lock.release()
 
             elif request_type == CraveResultsCommand.CREATE_SHARED_STATUS:
                 log.info("Processing CraveResultsCommand.CREATE_SHARED_STATUS")
@@ -696,6 +713,7 @@ class ThreadedServer(object):
         lock_acquire_time = time.time() - start_time_lock
         self.new_work.append(data)
         new_work_len = len(self.new_work)
+        self.new_work_changed = True
         self.new_work_lock.release()
 
         log.debug("Success in %.4f seconds (lock: %.4f, len: %d)." %

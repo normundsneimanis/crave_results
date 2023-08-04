@@ -301,6 +301,7 @@ class CraveResultsSql(CraveResultsBase):
                 db_status[self.table_name] = {}
                 db_status[self.table_name]['existing_columns'] = existing_columns
                 db_status[self.table_name]['lengths'] = {}
+                db_status[self.table_name]['run_times_ids'] = {}
 
             else:
                 existing_columns = db_status[self.table_name]['existing_columns']
@@ -371,20 +372,24 @@ class CraveResultsSql(CraveResultsBase):
             start_time = time.time()
             for column in data.keys():
                 if column == 'run_time':
-                    queries.append(f"INSERT INTO {self.table_name} ({column}) VALUES ({data[column]})")
+                    self.sql.cursor.execute(f"INSERT INTO {self.table_name} ({column}) VALUES ({data[column]})")
+                    db_status[self.table_name]['run_times_ids'][self.run_time] = self.sql.cursor.lastrowid
                     continue
+                if self.run_time not in db_status[self.table_name]['run_times_ids']:
+                    db_status[self.table_name]['run_times_ids'][self.run_time] = \
+                        self._select_db(f"select id from {self.table_name} where run_time = '{self.run_time}'")[0]
                 if update:
                     if column not in list(db_status[self.table_name]['lengths'][self.run_time].keys()):
                         # self.logger.debug("Attempting to insert data for %s %s" % (column, str(self.run_time)))
                         queries.append(f"UPDATE {self.table_name} SET {column}='{data[column]}' "
-                                       f"WHERE run_time={self.run_time}")
+                                       f"WHERE id={db_status[self.table_name]['run_times_ids'][self.run_time]}")
                     else:
                         # self.logger.debug("Attempting to concat data for %s %s" % (column, str(self.run_time)))
                         queries.append(f"UPDATE {self.table_name} SET {column}=CONCAT({column}, ', {data[column]}') "
-                                       f"WHERE run_time={self.run_time}")
+                                       f"WHERE id={db_status[self.table_name]['run_times_ids'][self.run_time]}")
                 else:
                     queries.append(f"UPDATE {self.table_name} SET {column}='{data[column]}' "
-                                   f"WHERE run_time={self.run_time}")
+                                   f"WHERE id={db_status[self.table_name]['run_times_ids'][self.run_time]}")
             stats['insert_prepare_queries_time'] = "%.4f" % (time.time() - start_time)
 
             start_time = time.time()
