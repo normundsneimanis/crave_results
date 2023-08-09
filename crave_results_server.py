@@ -127,6 +127,7 @@ class ThreadedServer(object):
         self.new_work = deque()
         self.new_work_file = "new_work_data.pickle"
         self.new_work_changed = False
+        self.periodic_save_time = time.time() + 30.
         if os.path.isfile(self.new_work_file):
             with open(self.new_work_file, "rb") as fi:
                 try:
@@ -138,8 +139,6 @@ class ThreadedServer(object):
 
         signal.signal(signal.SIGINT, self.interrupt_handler)
         signal.signal(signal.SIGTERM, self.interrupt_handler)
-        signal.signal(signal.SIGALRM, self.periodic_save)
-        signal.alarm(30)
         log.info("Starting")
         self.threads_inserter = []
         inserter = threading.Thread(target=self.insert_thread, args=())
@@ -193,8 +192,7 @@ class ThreadedServer(object):
         if wait and len(self.threads):
             log.info("%d threads still alive" % len(self.threads))
 
-    def periodic_save(self, signum, stack):
-        signal.alarm(30)
+    def periodic_save(self):
         for cb in self.periodic_save_cbs:
             cb()
         self.periodic_save_i += 1
@@ -210,24 +208,31 @@ class ThreadedServer(object):
 
         for cb in self.interrupt_cbs:
             cb()
-        signal.alarm(0)
         log.info("Exiting.")
         sys.exit(0)
 
     def listen(self):
         self.sock.listen(50)
+        self.sock.settimeout(1.)
         while True:
-            connection, client_address = self.sock.accept()
-            if self.stopping.is_set():
-                log.info("Closing connection from client %s:%s as server is stopping" %
-                         (client_address[0], client_address[1]))
-                connection.close()
-                continue
-            connection.settimeout(60)
-            log.debug('Connection from %s:%s' % (client_address[0], client_address[1]))
-            thread = threading.Thread(target=self.accept, args=(connection, client_address))
-            thread.start()
-            self.threads.append(thread)
+            # Periodical cleanup and saving data
+            if self.periodic_save_time < time.time():
+                self.periodic_save_time = time.time() + 30.
+                self.periodic_save()
+            try:
+                connection, client_address = self.sock.accept()
+                if self.stopping.is_set():
+                    log.info("Closing connection from client %s:%s as server is stopping" %
+                             (client_address[0], client_address[1]))
+                    connection.close()
+                    continue
+                connection.settimeout(60)
+                log.debug('Connection from %s:%s' % (client_address[0], client_address[1]))
+                thread = threading.Thread(target=self.accept, args=(connection, client_address))
+                thread.start()
+                self.threads.append(thread)
+            except socket.timeout:
+                pass
 
     def insert_thread(self):
         log.info("Starting insert_thread")
@@ -235,6 +240,13 @@ class ThreadedServer(object):
         aggregator = Aggregator()
         while True:
             if self.stopping.is_set():
+                if aggregating:
+                    log.info("Stopping, committing aggregated data %.2f" % (time.time() - aggregator.start_time))
+                    start_time = time.time()
+                    aggregator.commit(log)
+                    log.debug("Aggregator commit time: %.5f" % (time.time() - start_time))
+                else:
+                    log.info("Stopping insert_thread, not aggregating.")
                 break
             start_time = time.time()
             self.new_work_lock.acquire()
@@ -537,15 +549,20 @@ class ThreadedServer(object):
                     self.shared_status_lock.release()
                     return
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(shared_status))
-                connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
-                log.debug("Sent %d bytes (w/o header), waiting for answer" % len(return_data))
-                connection.settimeout(5.)
                 try:
+                    connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
+                    log.debug("Sent %d bytes (w/o header), waiting for answer" % len(return_data))
+                    connection.settimeout(20.)
                     received = connection.recv(65535)
                 except socket.timeout:
                     log.warning("Timeout waiting for status update.")
-                    connection.close()
                     self.shared_status_lock.release()
+                    connection.close()
+                    return
+                except socket.error as e:
+                    log.warning("Socket error: %s" % str(e))
+                    self.shared_status_lock.release()
+                    connection.close()
                     return
                 log.debug('Received %d bytes from %s:%s' % (len(received), client_address[0], client_address[1]))
                 if len(received) == 0:
@@ -557,15 +574,15 @@ class ThreadedServer(object):
                 client_name, payload = self.crypt.decrypt(payload)
                 name, new_data = pickle.loads(payload)
                 if not self.shared_status.update(name, new_data):
+                    self.shared_status_lock.release()
                     self._return_error(connection, client_address,
                                        "Incomplete message received for updating shared status", client_name)
-                    self.shared_status_lock.release()
                     return
+                self.shared_status_lock.release()
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
                 connection.sendall(struct.pack("!bL", CraveResultsCommand.COMMAND_OK,
                                                len(return_data)) + return_data)
                 connection.close()
-                self.shared_status_lock.release()
 
             elif request_type == CraveResultsCommand.CREATE_SHARED_STATUS:
                 log.info("Processing CraveResultsCommand.CREATE_SHARED_STATUS")
@@ -630,6 +647,7 @@ class ThreadedServer(object):
                 with open(filepath, "rb") as f:
                     file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
 
+                connection.settimeout(120)
                 connection.sendall(
                     struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(file_contents_encrypted)) +
                     file_contents_encrypted)

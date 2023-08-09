@@ -373,13 +373,20 @@ class CraveResults:
 
     def _get_answer(self, request):
         sock = self._create_socket()
-        sock.sendall(request)
+        try:
+            sock.sendall(request)
+        except socket.error as e:
+            self.logger.debug("Error sending request: %s" % str(e))
+            return None
 
         sock.settimeout(5.0)
         try:
             received = sock.recv(65535)
         except socket.timeout:
             self.logger.debug("Timeout waiting for answer.")
+            return None
+        except socket.error as e:
+            self.logger.debug("Error receiving answer from host: %s" % str(e))
             return None
 
         answer = struct.unpack("!b", received[0:1])[0]
@@ -442,7 +449,11 @@ class CraveResults:
 
     def _request(self, request_data):
         sock = self._create_socket()
-        sock.sendall(request_data)
+        try:
+            sock.sendall(request_data)
+        except socket.error as e:
+            self.logger.debug("Error sending request: %s" % str(e))
+            return None
 
         sock.settimeout(5.0)
         try:
@@ -450,6 +461,9 @@ class CraveResults:
         except socket.timeout:
             self.logger.debug("Timeout waiting for answer from server.")
             # self.logger.error(''.join(traceback.format_stack()))
+            return None, None
+        except socket.error as e:
+            self.logger.debug("Error receiving answer from host: %s" % str(e))
             return None, None
 
         answer = struct.unpack("!b", received[0:1])[0]
@@ -654,14 +668,21 @@ class CraveResults:
         request_data = self.crypt.encrypt(pickle.dumps(name))
         request = struct.pack("!bL", CraveResultsCommand.UPDATE_SHARED_STATUS, len(request_data)) + request_data
         sock = self._create_socket()
-        sock.sendall(request)
+        try:
+            sock.sendall(request)
+        except socket.error as e:
+            self.logger.debug("Error sending request: %s" % str(e))
+            return None
 
-        sock.settimeout(10.0)
+        sock.settimeout(60.0)
         try:
             received = sock.recv(65535)
         except socket.timeout:
             self.logger.debug("Timeout waiting for answer from server.")
             return None
+        except socket.error as e:
+            self.logger.debug("Error receiving answer from host: %s" % str(e))
+            return False
 
         request_type = struct.unpack("!b", received[0:1])[0]
         if request_type == CraveResultsCommand.COMMAND_OK:
@@ -687,12 +708,19 @@ class CraveResults:
         sock = self.shared_status_socket
         request_data = self.crypt.encrypt(pickle.dumps([name, value]))
         request = struct.pack("!L", len(request_data)) + request_data
-        sock.sendall(request)
-        sock.settimeout(10.0)
+        try:
+            sock.sendall(request)
+        except socket.error as e:
+            self.logger.debug("Error sending request: %s" % str(e))
+            return False
+        sock.settimeout(60.0)
         try:
             received = sock.recv(65535)
         except socket.timeout:
             self.logger.debug("Timeout waiting for answer from server.")
+            return False
+        except socket.error as e:
+            self.logger.debug("Error receiving answer from host: %s" % str(e))
             return False
 
         result = struct.unpack("!b", received[0:1])[0]

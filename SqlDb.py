@@ -216,7 +216,10 @@ class CraveResultsSql(CraveResultsBase):
             shmem.lock()
             db_status = shmem.get_locked()
             if name in db_status.keys():
+                self.logger.info("remove_experiment(): Removing %s from db_status" % name)
                 del db_status[name]
+            else:
+                self.logger.warning("remove_experiment(): %s does not exist in db_status" % name)
             shmem.put_locked(db_status)
             with self.sql:
                 self.sql.cursor.execute("drop table if exists %s" % name)
