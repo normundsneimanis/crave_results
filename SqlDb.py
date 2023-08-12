@@ -379,8 +379,12 @@ class CraveResultsSql(CraveResultsBase):
                     db_status[self.table_name]['run_times_ids'][self.run_time] = self.sql.cursor.lastrowid
                     continue
                 if self.run_time not in db_status[self.table_name]['run_times_ids']:
-                    db_status[self.table_name]['run_times_ids'][self.run_time] = \
-                        self._select_db(f"select id from {self.table_name} where run_time = '{self.run_time}'")[0]
+                    ids = self._select_db(f"select id from {self.table_name} where run_time = '{self.run_time}'")
+                    if not len(ids):
+                        # Run with run_time does not exist in database because table was removed.
+                        # Silently ignore old records.
+                        continue
+                    db_status[self.table_name]['run_times_ids'][self.run_time] = ids[0]
                 if update:
                     if column not in list(db_status[self.table_name]['lengths'][self.run_time].keys()):
                         # self.logger.debug("Attempting to insert data for %s %s" % (column, str(self.run_time)))

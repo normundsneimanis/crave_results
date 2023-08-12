@@ -1,7 +1,7 @@
 import os
 import threading
 import pickle
-from CraveResults import CraveResultsException
+from CraveBase import CraveResultsException
 
 
 class CraveResultsSharedStatus:

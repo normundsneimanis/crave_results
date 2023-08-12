@@ -11,6 +11,10 @@ import socket
 import os
 
 
+class CraveResultsException(Exception):
+    pass
+
+
 def _get_payload(log, connection, client_address, new_data):
     payload_length = struct.unpack("!L", new_data[0:4])[0]
     new_data_len = len(new_data[4:])

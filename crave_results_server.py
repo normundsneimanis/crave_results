@@ -647,10 +647,14 @@ class ThreadedServer(object):
                 with open(filepath, "rb") as f:
                     file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
 
+                download_start_time = time.time()
+                length = len(file_contents_encrypted)
                 connection.settimeout(120)
                 connection.sendall(
-                    struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(file_contents_encrypted)) +
+                    struct.pack("!bL", CraveResultsCommand.COMMAND_OK, length) +
                     file_contents_encrypted)
+                log.debug("Uploaded in %.2f seconds, %.1f Mbps" %
+                          (time.time() - download_start_time, (length/1e6)/length))
                 connection.close()
             else:
                 self._return_error(connection, client_address, "Message type %d not implemented" % request_type)

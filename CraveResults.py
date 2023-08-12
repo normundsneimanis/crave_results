@@ -9,7 +9,7 @@ import pickle
 import traceback
 from .CraveResultsLogType import CraveResultsLogType
 from .CraveResultsCommand import CraveResultsCommand
-from .CraveBase import _get_payload, CraveCrypt, CraveCryptTest
+from .CraveBase import _get_payload, CraveCrypt, CraveCryptTest, CraveResultsException
 from .GzipRotator import GZipRotator, GzipRotatingFileHandler
 import threading
 import socket
@@ -23,10 +23,6 @@ import posix_ipc
 import hashlib
 
 
-class CraveResultsException(Exception):
-    pass
-
-
 class CraveResults:
     def __init__(self, active=True):
         self.table_name = None
@@ -38,7 +34,7 @@ class CraveResults:
         self.sender = None
         self.log_lock = threading.Lock()
         self._send_delay = 1.
-        self.connect_timeout = 5.
+        self.connect_timeout = 30.
         self.host, self.port = os.getenv('CRAVE_RESULTS_HOST'), int(os.getenv('CRAVE_RESULTS_PORT', 65099))
         if not self.host:
             raise ValueError("CraveResults requires CRAVE_RESULTS_HOST to be configured")
@@ -389,6 +385,10 @@ class CraveResults:
             self.logger.debug("Error receiving answer from host: %s" % str(e))
             return None
 
+        if len(received) == 0:
+            self.logger.debug("Server closed connection.")
+            return None
+
         answer = struct.unpack("!b", received[0:1])[0]
         if answer == CraveResultsCommand.COMMAND_OK:
             payload = _get_payload(self.logger, sock, (self.host, self.port), received[1:])
@@ -401,18 +401,20 @@ class CraveResults:
         elif answer in [CraveResultsCommand.COMMAND_FAILED, CraveResultsCommand.COMMAND_FAILED_ENCRYPTED]:
             error_msg_len = struct.unpack("!L", received[1:5])[0]
             if len(received[3:]) < error_msg_len:
-                self.logger.debug("Server returned error but error message is too short (%d/%d)" %
-                                  (len(received[3:]), error_msg_len))
-                return None
+                error_msg = ("Server returned error but error message is too short (%d/%d)" %
+                             (len(received[3:]), error_msg_len))
+                self.logger.debug(error_msg)
+                raise CraveResultsException(error_msg)
             if answer == CraveResultsCommand.COMMAND_FAILED:
                 error_msg = received[5:].decode()
             else:
                 error_msg = self.crypt.decrypt(received[5:])
             self.logger.debug("Server returned message: %s" % error_msg)
-            return None
+            raise CraveResultsException(error_msg)
         else:
-            self.logger.debug("Unknown answer given from server: %d" % answer)
-            return None
+            error_msg = "Unknown answer given from server: %d" % answer
+            self.logger.debug(error_msg)
+            raise CraveResultsException(error_msg)
 
     def list_hyperopt(self):
         request = struct.pack("!b", CraveResultsCommand.LIST_HYPEROPT)
@@ -665,39 +667,59 @@ class CraveResults:
             return False
 
     def shared_status_get(self, name: str):
-        request_data = self.crypt.encrypt(pickle.dumps(name))
-        request = struct.pack("!bL", CraveResultsCommand.UPDATE_SHARED_STATUS, len(request_data)) + request_data
-        sock = self._create_socket()
-        try:
-            sock.sendall(request)
-        except socket.error as e:
-            self.logger.debug("Error sending request: %s" % str(e))
-            return None
+        backoff_time = 0.5
+        while True:
+            request_data = self.crypt.encrypt(pickle.dumps(name))
+            request = struct.pack("!bL", CraveResultsCommand.UPDATE_SHARED_STATUS, len(request_data)) + request_data
+            sock = self._create_socket()
+            try:
+                sock.sendall(request)
+            except socket.error as e:
+                self.logger.error("Error sending request: %s" % str(e))
+                if backoff_time < 60.:
+                    backoff_time *= 2.
+                print("Failed getting shared status. Retrying in %f seconds" % backoff_time)
+                time.sleep(backoff_time)
+                continue
 
-        sock.settimeout(60.0)
-        try:
-            received = sock.recv(65535)
-        except socket.timeout:
-            self.logger.debug("Timeout waiting for answer from server.")
-            return None
-        except socket.error as e:
-            self.logger.debug("Error receiving answer from host: %s" % str(e))
-            return False
+            sock.settimeout(60.0)
+            try:
+                received = sock.recv(65535)
+            except socket.timeout:
+                self.logger.error("Timeout waiting for answer from server.")
+                if backoff_time < 60.:
+                    backoff_time *= 2.
+                print("Failed getting shared status. Retrying in %f seconds" % backoff_time)
+                time.sleep(backoff_time)
+                continue
+            except socket.error as e:
+                self.logger.error("Error receiving answer from host: %s" % str(e))
+                if backoff_time < 60.:
+                    backoff_time *= 2.
+                print("Failed getting shared status. Retrying in %f seconds" % backoff_time)
+                time.sleep(backoff_time)
+                continue
 
-        request_type = struct.unpack("!b", received[0:1])[0]
-        if request_type == CraveResultsCommand.COMMAND_OK:
-            payload = _get_payload(self.logger, sock, (self.host, self.port), received[1:])
-            if payload is None:
-                self.logger.debug("Failed to get all packet data")
-                return None
+            if len(received) == 0:
+                self.logger.debug("Server closed connection.")
+            else:
+                request_type = struct.unpack("!b", received[0:1])[0]
+                if request_type == CraveResultsCommand.COMMAND_OK:
+                    payload = _get_payload(self.logger, sock, (self.host, self.port), received[1:])
+                    if payload is None:
+                        self.logger.error("Failed to get all packet data")
+                    else:
+                        payload = self.crypt.decrypt(payload)
+                        value = pickle.loads(payload)
+                        self.shared_status_socket = sock
+                        return value
+                else:
+                    self._handle_failure(request_type, received[1:])
 
-            payload = self.crypt.decrypt(payload)
-            value = pickle.loads(payload)
-            self.shared_status_socket = sock
-            return value
-        else:
-            self._handle_failure(request_type, received[1:])
-            return None
+            if backoff_time < 60.:
+                backoff_time *= 2.
+            print("Failed getting shared status. Retrying in %f seconds" % backoff_time)
+            time.sleep(backoff_time)
 
     def shared_status_put(self, name: str, value) -> bool:
         if not self.shared_status_socket:
@@ -721,6 +743,10 @@ class CraveResults:
             return False
         except socket.error as e:
             self.logger.debug("Error receiving answer from host: %s" % str(e))
+            return False
+
+        if len(received) == 0:
+            self.logger.debug("Server closed connection.")
             return False
 
         result = struct.unpack("!b", received[0:1])[0]
@@ -755,13 +781,18 @@ class CraveResults:
             return False
 
     def get_dataset(self, name):
-        request_data = self.crypt.encrypt(pickle.dumps(name))
-        request = struct.pack("!bL", CraveResultsCommand.GET_DATASET, len(request_data)) + request_data
+        backoff_time = 0.5
+        while True:
+            request_data = self.crypt.encrypt(pickle.dumps(name))
+            request = struct.pack("!bL", CraveResultsCommand.GET_DATASET, len(request_data)) + request_data
 
-        answer = self._get_answer(request)
-        if answer:
-            return answer
-        raise CraveResultsException("Failed getting answer from server")
+            answer = self._get_answer(request)
+            if answer:
+                return answer
+            if backoff_time < 60.:
+                backoff_time *= 2.
+            self.logger.info("Download failed. Retrying in %f seconds" % backoff_time)
+            time.sleep(backoff_time)
 
 
 class CraveResultsTestUnencrypted(CraveResults):

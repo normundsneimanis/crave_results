@@ -2,7 +2,7 @@ import os
 import threading
 import pickle
 import hyperopt
-from CraveResults import CraveResultsException
+from CraveBase import CraveResultsException
 
 
 class CraveResultsHyperopt:
