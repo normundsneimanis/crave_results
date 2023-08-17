@@ -644,17 +644,18 @@ class ThreadedServer(object):
                     self._return_error(connection, client_address, "File does not exist.",
                                        client_name)
                     return
+                download_start_time = time.time()
                 with open(filepath, "rb") as f:
                     file_contents_encrypted = self.crypt.encrypt(client_name, f.read())
 
-                download_start_time = time.time()
                 length = len(file_contents_encrypted)
                 connection.settimeout(120)
                 connection.sendall(
                     struct.pack("!bL", CraveResultsCommand.COMMAND_OK, length) +
                     file_contents_encrypted)
-                log.debug("Uploaded in %.2f seconds, %.1f Mbps" %
-                          (time.time() - download_start_time, (length/1e6)/length))
+                total_time = time.time() - download_start_time
+                if total_time > 0.1:
+                    log.debug("Uploaded in %.4f seconds, %.1f Mbps" % (total_time, (length/1e6)/total_time))
                 connection.close()
             else:
                 self._return_error(connection, client_address, "Message type %d not implemented" % request_type)

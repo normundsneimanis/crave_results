@@ -1,0 +1,122 @@
+diff -ur transformers.orig/integrations.py transformers/integrations.py
+--- transformers.orig/integrations.py	2023-08-12 12:13:10.691978638 +0300
++++ transformers/integrations.py	2023-08-17 11:52:14.192162481 +0300
+@@ -106,6 +106,10 @@
+     return importlib.util.find_spec("ray") is not None
+ 
+ 
++def is_craveresults_available():
++    return importlib.util.find_spec("crave_results") is not None
++
++
+ def is_ray_tune_available():
+     if not is_ray_available():
+         return False
+@@ -823,6 +827,100 @@
+             self._wandb.log_artifact(artifact, aliases=[f"checkpoint-{state.global_step}"])
+ 
+ 
++class CraveResultsCallback(TrainerCallback):
++    """
++    A [`TrainerCallback`] that logs metrics, media, model checkpoints to CraveResults.
++    """
++
++    def __init__(self):
++        self._log_model = "checkpoint"
++        has_craveresults = is_craveresults_available()
++        if not has_craveresults:
++            raise RuntimeError("CraveResultsCallback requires CraveResults to be installed.")
++        self._db = None
++        if has_craveresults:
++            import crave_results
++
++            self._db = crave_results.CraveResults()
++        self._initialized = False
++
++    def setup(self, args, state, model, **kwargs):
++        """
++        Setup the optional Weights & Biases (*wandb*) integration.
++        """
++
++        if self._db is None:
++            return
++        self._initialized = True
++        if state.is_world_process_zero:
++            logger.info(
++                'Logging to CraveResults enabled'
++            )
++            combined_dict = {**args.to_sanitized_dict()}
++
++            if hasattr(model, "config") and model.config is not None:
++                model_config = model.config.to_dict()
++                combined_dict = {**model_config, **combined_dict}
++            trial_name = state.trial_name
++            init_args = {}
++            if trial_name is not None:
++                init_args["name"] = trial_name
++                init_args["group"] = args.run_name
++            else:
++                if not (args.run_name is None or args.run_name == args.output_dir):
++                    init_args["name"] = args.run_name
++
++            self._db.init({
++                "project": os.getenv("LOG_PROJECT", "huggingface"),
++                                    "config": combined_dict,
++                **init_args,
++            })
++
++    def on_train_begin(self, args, state, control, model=None, **kwargs):
++        if self._db is None:
++            return
++        hp_search = state.is_hyper_param_search
++        if hp_search:
++            self._initialized = False
++            args.run_name = None
++        if not self._initialized:
++            self.setup(args, state, model, **kwargs)
++
++    def on_train_end(self, args, state, control, model=None, tokenizer=None, **kwargs):
++        if self._db is None:
++            return
++        if self._log_model in ("end", "checkpoint") and self._initialized and state.is_world_process_zero:
++            from .trainer import Trainer
++
++            fake_trainer = Trainer(args=args, model=model, tokenizer=tokenizer)
++            with tempfile.TemporaryDirectory() as temp_dir:
++                fake_trainer.save_model(temp_dir)
++                logger.info("Logging model artifacts. ...")
++                for f in Path(temp_dir).glob("*"):
++                    if f.is_file():
++                        self._db.log({"model": self._db.binary(f.read_bytes(),name=str(f))})
++
++    def on_log(self, args, state, control, model=None, logs=None, **kwargs):
++        if self._db is None:
++            return
++        if not self._initialized:
++            self.setup(args, state, model)
++        if state.is_world_process_zero:
++            logs = rewrite_logs(logs)
++            self._db.log({**logs, "train/global_step": state.global_step})
++
++    def on_save(self, args, state, control, **kwargs):
++        if self._log_model == "checkpoint" and self._initialized and state.is_world_process_zero:
++
++            ckpt_dir = f"checkpoint-{state.global_step}"
++            artifact_path = os.path.join(args.output_dir, ckpt_dir)
++            logger.info(f"Logging checkpoint artifacts in {ckpt_dir}. ...")
++            for f in Path(ckpt_dir).glob("*"):
++                if f.is_file():
++                    self._db.log({
++                        "model": self._db.binary(f.read_bytes(), name=str(f))})
++
++
+ class CometCallback(TrainerCallback):
+     """
+     A [`TrainerCallback`] that sends the logs to [Comet ML](https://www.comet.ml/site/).
+@@ -1607,6 +1705,7 @@
+     "clearml": ClearMLCallback,
+     "dagshub": DagsHubCallback,
+     "flyte": FlyteCallback,
++    "crave_results": CraveResultsCallback,
+ }
+ 

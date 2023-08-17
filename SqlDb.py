@@ -44,6 +44,7 @@ type_map = {
     bool: lambda a: int(a),
     list: lambda a: json.dumps(a),
     dict: lambda a: json.dumps(a),
+    type(None): lambda a: str(a)
 }
 
 
@@ -98,7 +99,7 @@ class CraveResultsBase:
 
 
 class CraveResultsSql(CraveResultsBase):
-    allowed_chars = re.compile(r"[\w_\- ]")
+    allowed_chars = re.compile(r"[\w_\- /]")
     # db_status = {}
 
     def __init__(self, log):
@@ -138,8 +139,9 @@ class CraveResultsSql(CraveResultsBase):
 
     @staticmethod
     def validate_string(s):
-        if len(re.sub(CraveResultsSql.allowed_chars, "", s)):
-            raise ValueError("Invalid characters found in %s" % s)
+        invalid_chars = re.sub(CraveResultsSql.allowed_chars, "", s)
+        if len(invalid_chars):
+            raise ValueError("Invalid characters found in %s: %s" % (s, invalid_chars))
 
     def init(self, data: dict) -> None:
         self._set_metadata(data)
@@ -167,6 +169,10 @@ class CraveResultsSql(CraveResultsBase):
     def config(self, data: dict) -> None:
         self._set_metadata(data)
         data = self._prepend_key(data, "c")
+        # TODO bring this to _prepend_key and validate
+        for k in list(data.keys()):
+            if isinstance(data[k], str):
+                data[k] = data[k].replace("'", '"')
         with self.sql:
             self._insert(data)
 
@@ -230,13 +236,12 @@ class CraveResultsSql(CraveResultsBase):
     # Replace spaces and hyphens with SQL compatible characters.
     @staticmethod
     def _rep(field):
-        return field.replace(" ", "_").replace("-", "_")
+        return field.replace(" ", "_").replace("-", "_").replace('/', '__')
 
     @staticmethod
     def _prepend_key(data: dict, key) -> dict:
         data = copy.deepcopy(data)
-        keys = list(data.keys())
-        for k in keys:
+        for k in list(data.keys()):
             CraveResultsSql.validate_string(k)
             data[key + CraveResultsSql._rep(k)] = data[k]
             del data[k]
@@ -348,10 +353,13 @@ class CraveResultsSql(CraveResultsBase):
                 elif column not in modify_columns.keys():
                     # Determine column type and create/alter database table if needed
                     if field_type.lower() != existing_columns[column].lower():
-                        if self.record_type_idx(field_type, type(data[column])) > \
-                                self.record_type_idx(existing_columns[column], type(data[column])):
-                            queries.append(f"ALTER TABLE {self.table_name} MODIFY {column} {field_type}")
-                            modify_columns[column] = field_type
+                        try:
+                            if self.record_type_idx(field_type, type(data[column])) > \
+                                    self.record_type_idx(existing_columns[column], type(data[column])):
+                                queries.append(f"ALTER TABLE {self.table_name} MODIFY {column} {field_type}")
+                                modify_columns[column] = field_type
+                        except ValueError as e:
+                            self.logger.error("Field type changed for column %s" % column)
             stats['modify_prepare_times'] = "%.4f" % (time.time() - start_time)
 
             start_time = time.time()

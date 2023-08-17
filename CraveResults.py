@@ -355,17 +355,30 @@ class CraveResults:
         }
 
     def _create_socket(self):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.connect_timeout)
-            sock.connect((self.host, self.port))
-            sock.settimeout(None)
-            fcntl.fcntl(sock, fcntl.F_SETFL)
-        except Exception as e:
-            self.logger.debug(e)
-            raise CraveResultsException("Failed to open connection") from e
+        retries = 4
+        backoff_time = 1.
+        while retries:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(self.connect_timeout)
+                sock.connect((self.host, self.port))
+                sock.settimeout(None)
+                fcntl.fcntl(sock, fcntl.F_SETFL)
+                return sock
+            except OSError as e:
+                err = e.args[0]
+                if err == errno.EHOSTUNREACH:
+                    self.logger.warning("Host unreachable. Retrying in %d seconds." % int(backoff_time))
+                    time.sleep(backoff_time)
+                    backoff_time *= 2
+                    retries -= 1
+                    continue
+                raise CraveResultsException("Failed to open connection") from e
+            except Exception as e:
+                self.logger.debug(e)
+                raise CraveResultsException("Failed to open connection") from e
 
-        return sock
+        raise CraveResultsException("Failed to open connection. Retries exceeded")
 
     def _get_answer(self, request):
         sock = self._create_socket()
