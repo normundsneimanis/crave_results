@@ -365,6 +365,12 @@ class CraveResults:
                 sock.settimeout(None)
                 fcntl.fcntl(sock, fcntl.F_SETFL)
                 return sock
+            except socket.timeout as e:
+                self.logger.warning("Connection attempt timed out. Retrying in %d seconds." % int(backoff_time))
+                time.sleep(backoff_time)
+                backoff_time *= 2
+                retries -= 1
+                continue
             except OSError as e:
                 err = e.args[0]
                 if err == errno.EHOSTUNREACH:

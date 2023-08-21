@@ -219,6 +219,7 @@ class ThreadedServer(object):
             if self.periodic_save_time < time.time():
                 self.periodic_save_time = time.time() + 30.
                 self.periodic_save()
+            connection = None
             try:
                 connection, client_address = self.sock.accept()
                 if self.stopping.is_set():
@@ -232,7 +233,8 @@ class ThreadedServer(object):
                 thread.start()
                 self.threads.append(thread)
             except socket.timeout:
-                pass
+                if connection and not connection._closed:
+                    connection.close()
 
     def insert_thread(self):
         log.info("Starting insert_thread")

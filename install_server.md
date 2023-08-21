@@ -40,6 +40,10 @@
     # Install python dependencies
     python3 -m pip install hyperopt
 
+    # Configure open files limit, /etc/sysctl.conf
+    <user>      hard nofile 8192
+    <user>      soft nofile 4096
+
     # Configure server access with .env
     cp .env.example .env
 
