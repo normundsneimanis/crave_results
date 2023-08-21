@@ -40,7 +40,7 @@
     # Install python dependencies
     python3 -m pip install hyperopt
 
-    # Configure open files limit, /etc/sysctl.conf
+    # Configure open files limit, /etc/security/limits.conf
     <user>      hard nofile 8192
     <user>      soft nofile 4096
 
