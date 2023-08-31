@@ -79,7 +79,8 @@ class SqlDb:
 
 
 class CraveResultsBase:
-    def __init__(self):
+    def __init__(self, logger):
+        self.logger = logger
         self.sql = SqlDb(
             user=os.environ['DB_USER'],
             password=os.environ['DB_PASS'],
@@ -87,7 +88,11 @@ class CraveResultsBase:
         )
 
     def _select_db(self, query: str, lines=False) -> list:
-        self.sql.cursor.execute(query)
+        try:
+            self.sql.cursor.execute(query)
+        except mariadb.ProgrammingError as e:
+            self.logger.error("Failed executing query: [%s]: %s" % (query, str(e)))
+            raise CraveResultsException from e
         result = []
         for a in self.sql.cursor.fetchall():
             if lines:
@@ -103,7 +108,7 @@ class CraveResultsSql(CraveResultsBase):
     # db_status = {}
 
     def __init__(self, log):
-        super().__init__()
+        super().__init__(log)
         self.table_name = None
         self.run_time = 0.0
         self.initialized = False
@@ -501,7 +506,7 @@ class CraveResultsSql(CraveResultsBase):
             fields_ret += ['id', 'run_time']
         fields = ", ".join(fields)
         with self.sql:
-            result = self._select_db(f'select {fields} from `{experiment}', lines=True)
+            result = self._select_db(f'select {fields} from `{experiment}`', lines=True)
 
         to_remove_indexes = []
         for row in result:

@@ -760,4 +760,7 @@ if __name__ == '__main__':
     logFormatter = logging.Formatter("%(asctime)s %(levelname)s %(threadName)s: %(message)s")
     logger.setFormatter(logFormatter)
     log.addHandler(logger)
-    run_server()
+    try:
+        run_server()
+    except Exception as e:
+        log.exception(e)

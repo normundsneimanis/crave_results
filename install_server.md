@@ -16,6 +16,9 @@
 
     # Log in database as root
     sudo mysql
+
+    # List users
+    SELECT User FROM mysql.user;
     
     # Create CraveResults user
     CREATE USER 'craveresults'@'%' IDENTIFIED BY 'password';

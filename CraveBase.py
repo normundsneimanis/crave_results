@@ -88,10 +88,10 @@ class CraveCryptError(Exception):
 
 class CraveCryptServer:
     def __init__(self, logger):
+        self.logger = logger
         self.server_key, self.server_pubkey = get_client_keys("server")
         self.client_pubkeys = {}
         self.refresh_keys()
-        self.logger = logger
 
     def refresh_keys(self):
         client_pubkeys = {}
@@ -102,7 +102,16 @@ class CraveCryptServer:
                 with open(f, "rb") as fi:
                     client_pubkeys[f.replace(".pub", "")] = X25519PublicKey.from_public_bytes(fi.read())
 
-        self.client_pubkeys = client_pubkeys
+        keys_differ = sorted(list(client_pubkeys.keys())) != sorted(list(self.client_pubkeys.keys()))
+        values_differ = (sorted([i.public_bytes(cryptography.hazmat.primitives.serialization.Encoding.Raw,
+                                                cryptography.hazmat.primitives.serialization.PublicFormat.Raw)
+                                 for i in client_pubkeys.values()]) !=
+                         sorted([i.public_bytes(cryptography.hazmat.primitives.serialization.Encoding.Raw,
+                                                cryptography.hazmat.primitives.serialization.PublicFormat.Raw)
+                                 for i in self.client_pubkeys.values()]))
+        if keys_differ or values_differ:
+            self.logger.info("Reloading keys")
+            self.client_pubkeys = client_pubkeys
 
     def encrypt(self, client, payload):
         if client not in self.client_pubkeys.keys():
