@@ -9,3 +9,4 @@ class CraveResultsLogType(enum.IntEnum):
     LOG_HISTORY = enum.auto()
     LOG_ARTIFACT = enum.auto()
     BINARY = enum.auto()
+    REMOVE_EXPERIMENT = enum.auto()

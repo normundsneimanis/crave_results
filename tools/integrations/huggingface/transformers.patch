@@ -35,7 +35,7 @@ diff -ur transformers.orig/integrations.py transformers/integrations.py
 +
 +    def setup(self, args, state, model, **kwargs):
 +        """
-+        Setup the optional Weights & Biases (*wandb*) integration.
++        Setup the optional CraveResults integration.
 +        """
 +
 +        if self._db is None:

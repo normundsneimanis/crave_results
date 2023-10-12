@@ -24,11 +24,19 @@ import hashlib
 
 
 class CraveResults:
+    initialized = False
+
+    def __new__(cls):
+        if not hasattr(cls, 'instance'):
+            cls.instance = super(CraveResults, cls).__new__(cls)
+        return cls.instance
+
     def __init__(self, active=True):
+        if CraveResults.initialized:
+            return
         self.table_name = None
         self.run_time = 0.0
         self.active = active
-        self.initialized = False
         self.last_send_time = 0.0
         self.log_data = []
         self.sender = None
@@ -137,7 +145,7 @@ class CraveResults:
             self._append_info(config)
             self._append_log(struct.pack("!b", CraveResultsLogType.HYPERPARAMS) + pickle.dumps(config))
 
-        self.initialized = True
+        CraveResults.initialized = True
 
     def _restart_thread(self):
         if not self.sender.is_alive():
@@ -270,19 +278,46 @@ class CraveResults:
         self.log_data.append(log)
         self.log_lock.release()
 
+    @staticmethod
+    def __check_dict(data):
+        for k in data.keys():
+            t = type(data[k])
+            if t in [str, int, float]:
+                pass
+            elif t == list:
+                CraveResults.__check_list(data[k])
+            elif t == dict:
+                CraveResults.__check_dict(data[k])
+            else:
+                return False
+
+    @staticmethod
+    def __check_list(data):
+        for k in data:
+            t = type(k)
+            if t in [str, int, float]:
+                pass
+            elif t == list:
+                CraveResults.__check_list(k)
+            elif t == dict:
+                CraveResults.__check_dict(k)
+            else:
+                raise CraveResultsException("Invalid data logged: %s" % str(type(data[k])))
+
     def _append_info(self, data):
+        self.__check_dict(data)
         data['__experiment'] = self.experiment
         data['__run_time'] = self.run_time
 
     def config(self, data: dict) -> None:
-        if not self.active or not self.initialized:
+        if not self.active or not CraveResults.initialized:
             return
         # Initialize run hyperparams.
         self._append_log(struct.pack("!b", CraveResultsLogType.HYPERPARAMS) + pickle.dumps(data))
         self._restart_thread()
 
     def log(self, data: dict) -> None:
-        if not self.active or not self.initialized:
+        if not self.active or not CraveResults.initialized:
             return
         self._append_info(data)
         # Appends a new step to the 'history' object and updates the 'summary' object
@@ -290,7 +325,7 @@ class CraveResults:
         self._restart_thread()
 
     def log_history(self, data: dict) -> None:
-        if not self.active or not self.initialized:
+        if not self.active or not CraveResults.initialized:
             return
         self._append_info(data)
         # Appends a new step to the 'history' object without updating the 'summary' object
@@ -298,14 +333,14 @@ class CraveResults:
         self._restart_thread()
 
     def log_summary(self, data: dict):
-        if not self.active or not self.initialized:
+        if not self.active or not CraveResults.initialized:
             return
         self._append_info(data)
         self._append_log(struct.pack("!b", CraveResultsLogType.LOG_SUMMARY) + pickle.dumps(data))
         self._restart_thread()
 
     def log_artifact(self, data: dict) -> None:
-        if not self.active or not self.initialized:
+        if not self.active or not CraveResults.initialized:
             return
         self._append_info(data)
         # Log run artifacts, such as log files, images or video

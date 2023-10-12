@@ -7,20 +7,19 @@ import shutil
 import time
 import unittest
 from dotenv import load_dotenv
-from CraveResults import CraveResults, CraveResultsException, CraveResultsTestUnencrypted
+from crave_results import CraveResults, CraveResultsException
 import string
 import multiprocessing
 import hyperopt
-import sys
-from io import StringIO
-from unittest.mock import patch
+import numpy as np
 
 
 class Test(unittest.TestCase):
     def setUp(self):
         save_dir = os.path.expanduser("~/.crave_results/save")
         if os.path.isdir(save_dir):
-            shutil.rmtree(save_dir)
+            for f in os.listdir(save_dir):
+                os.unlink(os.path.join(save_dir, f))
         self.db = CraveResults()
         if os.path.isdir("tmp"):
             shutil.rmtree("tmp")
@@ -49,6 +48,9 @@ class Test(unittest.TestCase):
             })
 
     # Disabled as it does not output error messages to console but to log file instead
+    # import sys
+    # from io import StringIO
+    # from unittest.mock import patch
     # def test_encrypt_failed(self):
     #     db = CraveResultsTestUnencrypted()
     #     config = dict(
@@ -79,6 +81,8 @@ class Test(unittest.TestCase):
         pass
 
     def test_simple_run(self):
+        tables_start = self.db.get_experiments()
+
         config = dict(
             learning_rate=0.01,
             momentum=0.2,
@@ -121,9 +125,10 @@ class Test(unittest.TestCase):
         })
 
         # Due to async nature of communication, we must wait for results to be inserted in server database
-        time.sleep(5.1)
+        print("Waiting for data to be written in database")
+        time.sleep(65.)
         tables = self.db.get_experiments()
-        self.assertListEqual(tables, ['detect_pedestrians'], "Table created")
+        self.assertListEqual(sorted(tables), sorted(tables_start+['detect_pedestrians']), "Table created")
 
         runs = self.db.get_runs('detect_pedestrians', 'notes')
         run_times = [i[1] for i in runs]
@@ -271,6 +276,26 @@ class Test(unittest.TestCase):
 
         for proc in processes:
             proc.join()
+
+    def test_nan(self):
+        def asd():
+            result_logger = CraveResults()
+
+            experiment_config = dict(
+                learning_rate=0.01,
+                momentum=0.2,
+                architecture="CNN",
+                dataset_id="peds-0192",
+                infra="AWS",
+            )
+
+            result_logger.init({
+                "experiment": "detect_pedestrians",
+                'config': experiment_config
+            })
+
+            with self.assertRaises(CraveResultsException) as context:
+                result_logger.log({"test": np.nan, "test23": ["abc", "123", 456]})
 
 
 if __name__ == '__main__':

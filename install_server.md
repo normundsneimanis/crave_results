@@ -64,3 +64,6 @@
     sudo systemctl status crave-results-server
 
     # Install mariadb connector from the top of readme.md
+
+    # Prevent server from removing semaphores in /etc/systemd/logind.conf
+    RemoveIPC=no

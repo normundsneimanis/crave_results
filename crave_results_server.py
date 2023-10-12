@@ -127,6 +127,7 @@ class ThreadedServer(object):
         self.new_work = deque()
         self.new_work_file = "new_work_data.pickle"
         self.new_work_changed = False
+        self.new_work_len = 0
         self.periodic_save_time = time.time() + 30.
         if os.path.isfile(self.new_work_file):
             with open(self.new_work_file, "rb") as fi:
@@ -255,7 +256,7 @@ class ThreadedServer(object):
             lock_acquire_time = time.time() - start_time
             if len(self.new_work):
                 data = self.new_work.popleft()
-                num_left = len(self.new_work)
+                self.new_work_len = num_left = len(self.new_work)
                 self.new_work_changed = True
                 self.new_work_lock.release()
                 if not aggregating and num_left > 100:
@@ -263,6 +264,7 @@ class ThreadedServer(object):
                     aggregating = True
                     aggregator.start_time = time.time()
             else:
+                num_left = self.new_work_len
                 self.new_work_lock.release()
                 if aggregating and time.time() - aggregator.start_time > 60. and num_left == 0:
                     log.info("Committing aggregated data %.2f" % (time.time() - aggregator.start_time))
@@ -317,9 +319,9 @@ class ThreadedServer(object):
                     blake = hashlib.blake2b()
                     blake.update(file_contents)
                     checksum = blake.hexdigest()
-                    if not len(portion[7 + data_len:]) == pickle_len:
+                    if not len(portion[7 + data_len:]) - 4 == pickle_len:
                         log.error("Pickle length invalid. Expected %d got %d" %
-                                  (pickle_len, len(portion[7 + data_len:])))
+                                  (pickle_len, len(portion[7 + data_len:]) - 4))
                     data = pickle.loads(portion[7 + data_len:])
                     if checksum != data['checksum']:
                         log.error("checksum mismatch")
@@ -336,6 +338,15 @@ class ThreadedServer(object):
                     self.all_files[checksum] = file_path
                     self.all_files_lock.release()
                     sql_db.log_file(data)
+                elif command == CraveResultsLogType.REMOVE_EXPERIMENT:
+                    name = pickle.loads(portion[1:])
+                    sql_db = CraveResultsSql(log)
+                    sql_db.remove_experiment(name)
+                    log.info("Removed experiment %s" % name)
+                    saved_files_path = os.path.join(self.save_dir, name)
+                    if os.path.isdir(saved_files_path):
+                        shutil.rmtree(saved_files_path)
+                        log.info("Removed directory %s" % saved_files_path)
                 else:
                     log.error("Unknown CraveResultsLogType: %s" % str(command))
                 log.debug("Processed portion in %.5f seconds" % (time.time() - portion_start_time))
@@ -428,6 +439,7 @@ class ThreadedServer(object):
 
             elif request_type == CraveResultsCommand.REMOVE_EXPERIMENT:
                 log.info("Processing CraveResultsCommand.REMOVE_EXPERIMENT")
+
                 payload = _get_payload(log, connection, client_address, received[1:])
                 if payload is None:
                     self._return_error(connection, client_address,
@@ -435,24 +447,24 @@ class ThreadedServer(object):
                     return
                 client_name, payload = self.crypt.decrypt(payload)
                 name = pickle.loads(payload)
-                sql_db = CraveResultsSql(log)
+
                 try:
                     CraveResultsSql.validate_string(name)
                 except ValueError as e:
                     self._return_error(connection, client_address,
                                        "Invalid table name given: %s" % str(e), client_name)
                     return
-                sql_db.remove_experiment(name)
-                log.info("Removed experiment %s" % name)
-                saved_files_path = os.path.join(self.save_dir, name)
-                if os.path.isdir(saved_files_path):
-                    shutil.rmtree(saved_files_path)
-                    log.info("Removed directory %s" % saved_files_path)
 
                 return_data = self.crypt.encrypt(client_name, pickle.dumps(True))
                 connection.sendall(
                     struct.pack("!bL", CraveResultsCommand.COMMAND_OK, len(return_data)) + return_data)
                 connection.close()
+
+                self.new_work_lock.acquire()
+                self.new_work.append([struct.pack("!b", CraveResultsLogType.REMOVE_EXPERIMENT) + payload])
+                self.new_work_len = len(self.new_work)
+                self.new_work_changed = True
+                self.new_work_lock.release()
 
             elif request_type == CraveResultsCommand.LIST_HYPEROPT:
                 log.info("Processing CraveResultsCommand.LIST_HYPEROPT")
@@ -712,6 +724,11 @@ class ThreadedServer(object):
             self._return_error(connection, client_address, "Unable to decrypt")
             return
 
+        if self.new_work_len >= 10000:
+            log.error("accept_results() New work queue full")
+            self._return_error(connection, client_address, "New work queue full", client)
+            return
+
         # Insert payload data to database
         data = []
         cursor = 0
@@ -726,7 +743,7 @@ class ThreadedServer(object):
                 log.error("%d accept_results() requested to read more than available (num: %d, %d/%d)" %
                           (threading.get_ident(), portion_num, portion_len, len(payload[cursor+4:])))
                 self._return_error(connection, client_address, "Incomplete portion (num: %d, %d/%d)" %
-                                   (portion_num, portion_len, len(payload[cursor+4:])))
+                                   (portion_num, portion_len, len(payload[cursor+4:])), client)
                 return
 
         return_data = struct.pack("!b", CraveResultsCommand.COMMAND_OK)
@@ -737,12 +754,12 @@ class ThreadedServer(object):
         self.new_work_lock.acquire()
         lock_acquire_time = time.time() - start_time_lock
         self.new_work.append(data)
-        new_work_len = len(self.new_work)
+        self.new_work_len = len(self.new_work)
         self.new_work_changed = True
         self.new_work_lock.release()
 
         log.debug("Success in %.4f seconds (lock: %.4f, len: %d)." %
-                  ((time.time() - start_time), lock_acquire_time, new_work_len))
+                  ((time.time() - start_time), lock_acquire_time, self.new_work_len))
 
 
 def run_server():

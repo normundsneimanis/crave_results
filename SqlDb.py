@@ -380,8 +380,9 @@ class CraveResultsSql(CraveResultsBase):
             self.sql.db.commit()
             stats['modify_times'] = "%.4f" % (time.time() - start_time)
 
-            if 'error' in data.keys():
-                data['error'] = data['error'].replace("\'", "\\'")
+            for k in data.keys():
+                if isinstance(data[k], str):
+                    data[k] = data[k].replace("\'", "\\'")
 
             queries = []
             row_count = 0
